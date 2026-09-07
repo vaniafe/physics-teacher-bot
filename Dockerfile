@@ -1,1 +1,15 @@
-# Это инструкция для Render.com, как собрать и запустить бота# Используем официальный образ Python 3.12 (лёгкий вариант)FROM python:3.12-slim# Рабочая папка внутри сервераWORKDIR /app# Копируем список библиотек и устанавливаем ихCOPY requirements.txt .RUN pip install --no-cache-dir -r requirements.txt# Копируем ВСЕ файлы бота в серверCOPY . .# Команда запускаCMD [“python”, “main.py”]
+# Используем официальный образ Python 3.12
+FROM python:3.12-slim
+
+# Рабочая папка внутри сервера
+WORKDIR /app
+
+# Копируем список библиотек и устанавливаем их
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем ВСЕ файлы бота в сервер
+COPY . .
+
+# Команда запуска
+CMD ["python", "main.py"]
