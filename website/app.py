@@ -201,7 +201,11 @@ elif page == "📝 Проверка работ":
             ):
                 col1, col2 = st.columns([1, 2])
                 with col1:
-                    st.image(sub["photo_url"], use_container_width=True)
+                    photo_url = sub.get("photo_url")
+                    if photo_url and isinstance(photo_url, str):
+                        st.image(photo_url, use_container_width=True)
+                    else:
+                        st.warning("📷 Фото не загружено")
                     st.markdown(f"**Отправлено:** {sub['submitted_at'][:16].replace('T', ' ')}")
                 with col2:
                     hw_options_list = [(None, "— Не выбрано —")] + [(h["id"], h["title"]) for h in homeworks]
