@@ -203,7 +203,7 @@ elif page == "📝 Проверка работ":
                 with col1:
                     photo_url = sub.get("photo_url")
                     if photo_url and isinstance(photo_url, str):
-                        st.image(photo_url, use_container_width=True)
+                        st.image(photo_url, width=300)
                     else:
                         st.warning("📷 Фото не загружено")
                     st.markdown(f"**Отправлено:** {sub['submitted_at'][:16].replace('T', ' ')}")
