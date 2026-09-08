@@ -1,7 +1,153 @@
 import streamlit as st
 from supabase import create_client, Client
-import pandas as pd
+from collections import defaultdict
 from datetime import datetime
+
+# ============================================================
+# СТИЛИ (Sferum-like)
+# ============================================================
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Inter', sans-serif;
+}
+
+.main {
+    background: linear-gradient(135deg, #f5f7fa 0%, #e4e8ec 100%);
+}
+
+.card {
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    margin-bottom: 16px;
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(0,0,0,0.10);
+}
+
+.avatar-circle {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 3px solid #ffffff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+
+.avatar-large {
+    width: 140px;
+    height: 140px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 4px solid #ffffff;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+}
+
+.student-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: #1a1a1a;
+    margin-top: 8px;
+    text-align: center;
+}
+
+.student-class {
+    font-size: 13px;
+    color: #6b7280;
+    text-align: center;
+}
+
+.btn-back {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 8px 16px;
+    color: #374151;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btn-back:hover {
+    background: #f3f4f6;
+    border-color: #d1d5db;
+}
+
+.profile-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 20px;
+    padding: 32px;
+    color: white;
+    margin-bottom: 24px;
+    box-shadow: 0 8px 32px rgba(102, 126, 234, 0.25);
+}
+
+.date-block {
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    border-left: 4px solid #667eea;
+}
+
+.date-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #1f2937;
+    margin-bottom: 12px;
+}
+
+.hw-photo {
+    border-radius: 12px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+    transition: transform 0.2s;
+}
+
+.hw-photo:hover {
+    transform: scale(1.03);
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.status-pending { background: #fef3c7; color: #92400e; }
+.status-checked { background: #d1fae5; color: #065f46; }
+.status-graded { background: #dbeafe; color: #1e40af; }
+
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+}
+
+.stTabs [data-baseweb="tab"] {
+    background: #ffffff;
+    border-radius: 10px 10px 0 0;
+    padding: 10px 20px;
+    font-weight: 500;
+    color: #6b7280;
+    border: none;
+    box-shadow: 0 -2px 8px rgba(0,0,0,0.03);
+}
+
+.stTabs [aria-selected="true"] {
+    background: #667eea !important;
+    color: #ffffff !important;
+    font-weight: 600;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ============================================================
 # НАСТРОЙКА СТРАНИЦЫ
@@ -13,7 +159,7 @@ st.set_page_config(
 )
 
 # ============================================================
-# ПОДКЛЮЧЕНИЕ К SUPABASE
+# SUPABASE
 # ============================================================
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
@@ -21,18 +167,49 @@ SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ============================================================
-# АВТОРИЗАЦИЯ
+# ДАННЫЕ
+# ============================================================
+SCHOOLS_CONFIG = {
+    "СОШ №1 г. Голицыно": ["10", "11"],
+    "Маловяземская СОШ": ["9А", "9Б", "9В", "10", "11"],
+}
+
+STATUS_LABELS = {
+    "pending": ("⏳ Ожидает", "status-pending"),
+    "checked": ("✅ Проверено", "status-checked"),
+    "graded": ("📝 Оценено", "status-graded"),
+}
+
+# ============================================================
+# СОСТОЯНИЕ
 # ============================================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
+if "selected_student" not in st.session_state:
+    st.session_state.selected_student = None
+if "selected_school" not in st.session_state:
+    st.session_state.selected_school = None
+if "selected_class" not in st.session_state:
+    st.session_state.selected_class = None
 
+# ============================================================
+# АВТОРИЗАЦИЯ
+# ============================================================
 if not st.session_state.authenticated:
-    st.title("🔐 Вход для учителя")
-    col1, col2, col3 = st.columns([1, 2, 1])
+    st.markdown("<div style='height: 15vh'></div>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 1.5, 1])
     with col2:
-        login = st.text_input("Логин")
-        password = st.text_input("Пароль", type="password")
-        if st.button("Войти", use_container_width=True):
+        st.markdown("""
+        <div style='background: #ffffff; border-radius: 20px; padding: 40px; box-shadow: 0 8px 32px rgba(0,0,0,0.08); text-align: center;'>
+            <h1 style='margin-bottom: 8px; color: #1f2937;'>🔐 Вход</h1>
+            <p style='color: #6b7280; margin-bottom: 24px;'>Для учителя физики</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        login = st.text_input("Логин", key="login_input")
+        password = st.text_input("Пароль", type="password", key="pass_input")
+        
+        if st.button("Войти", use_container_width=True, type="primary"):
             if login == "teacher" and password == "physics2026":
                 st.session_state.authenticated = True
                 st.rerun()
@@ -43,35 +220,61 @@ if not st.session_state.authenticated:
 # ============================================================
 # БОКОВОЕ МЕНЮ
 # ============================================================
-st.sidebar.title("📚 Физика")
-st.sidebar.markdown("---")
-
-page = st.sidebar.radio(
-    "Раздел:",
-    ["👨‍🎓 Ученики", "📋 Задания", "📝 Проверка работ", "📊 Статистика"]
-)
-
-st.sidebar.markdown("---")
-if st.sidebar.button("🚪 Выйти"):
-    st.session_state.authenticated = False
-    st.rerun()
+with st.sidebar:
+    st.markdown("""
+    <div style='text-align: center; margin-bottom: 20px;'>
+        <h2 style='color: #667eea; margin: 0;'>📚 Физика</h2>
+        <p style='color: #9ca3af; font-size: 13px; margin-top: 4px;'>Проверка домашних заданий</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    if st.button("🏠 Главная", use_container_width=True):
+        st.session_state.selected_student = None
+        st.session_state.selected_school = None
+        st.session_state.selected_class = None
+        st.rerun()
+    
+    st.markdown("---")
+    
+    if st.button("🚪 Выйти", use_container_width=True):
+        st.session_state.authenticated = False
+        st.session_state.selected_student = None
+        st.rerun()
 
 # ============================================================
 # ФУНКЦИИ
 # ============================================================
-status_labels = {"pending": "⏳ Ожидает", "checked": "✅ Проверено", "graded": "📝 Оценено"}
 
 def get_students():
     result = supabase.table("students").select("*").order("last_name").execute()
-    return result.data
+    return result.data or []
+
+def get_student_by_id(student_id):
+    result = supabase.table("students").select("*").eq("id", student_id).execute()
+    return result.data[0] if result.data else None
+
+def get_submissions_by_student(student_id):
+    result = supabase.table("submissions").select("*").eq("student_id", student_id).order("due_date", desc=True).execute()
+    return result.data or []
 
 def get_homeworks():
     result = supabase.table("homeworks").select("*").order("due_date", desc=True).execute()
-    return result.data
+    return result.data or []
 
-def get_submissions():
-    result = supabase.table("submissions").select("*, students(*)").order("submitted_at", desc=True).execute()
-    return result.data
+def update_submissions_by_date(student_id, due_date, status=None, grade=None):
+    """Обновляет ВСЕ работы ученика на указанную дату."""
+    data = {}
+    if status is not None:
+        data["status"] = status
+    if grade is not None:
+        data["grade"] = grade
+    if data:
+        if due_date and due_date != "Без даты":
+            supabase.table("submissions").update(data).eq("student_id", student_id).eq("due_date", due_date).execute()
+        else:
+            supabase.table("submissions").update(data).eq("student_id", student_id).is_("due_date", "null").execute()
 
 def add_homework(title, textbook_reference, due_date):
     data = {
@@ -81,191 +284,307 @@ def add_homework(title, textbook_reference, due_date):
     }
     supabase.table("homeworks").insert(data).execute()
 
-def update_submission(sid, homework_id=None, grade=None, teacher_comment=None, status=None):
-    data = {}
-    if homework_id is not None:
-        data["homework_id"] = homework_id
-    if grade is not None:
-        data["grade"] = grade
-    if teacher_comment is not None:
-        data["teacher_comment"] = teacher_comment
-    if status is not None:
-        data["status"] = status
-    if data:
-        supabase.table("submissions").update(data).eq("id", sid).execute()
+# ============================================================
+# СТРАНИЦА УЧЕНИКА
+# ============================================================
+def show_student_page(student_id):
+    student = get_student_by_id(student_id)
+    if not student:
+        st.error("Ученик не найден")
+        return
+    
+    submissions = get_submissions_by_student(student_id)
+    
+    # Кнопка назад
+    col_back, _ = st.columns([1, 5])
+    with col_back:
+        if st.button("← Назад к списку", use_container_width=True):
+            st.session_state.selected_student = None
+            st.rerun()
+    
+    # Шапка профиля
+    st.markdown(f"""
+    <div class="profile-header">
+        <div style="display: flex; align-items: center; gap: 24px;">
+            <img src="{student.get('avatar_url', '')}" class="avatar-large" 
+                 onerror="this.style.display='none'; this.parentElement.innerHTML += '<div style=\\'width:140px;height:140px;border-radius:50%;background:#fff3;display:flex;align-items:center;justify-content:center;font-size:48px;\\'>🧑‍🎓</div>'">
+            <div>
+                <h1 style="margin: 0; font-size: 28px; font-weight: 700;">{student['last_name']} {student['first_name']}</h1>
+                <p style="margin: 8px 0 0 0; font-size: 16px; opacity: 0.9;">
+                    🏫 {student['school']} &nbsp;|&nbsp; 📚 {student['class_number']}
+                </p>
+                <p style="margin: 4px 0 0 0; font-size: 14px; opacity: 0.7;">
+                    Всего работ: {len(submissions)}
+                </p>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if not submissions:
+        st.info("Ученик пока не отправлял домашние задания.")
+        return
+    
+    # Группировка по датам
+    groups = defaultdict(list)
+    for sub in submissions:
+        key = sub.get("due_date") or "Без даты"
+        groups[key].append(sub)
+    
+    st.subheader("📸 Домашние задания")
+    
+    for due_date, subs in sorted(groups.items(), key=lambda x: (x[0] == "Без даты", x[0]), reverse=True):
+        # Определяем общий статус и оценку для группы
+        statuses = [s["status"] for s in subs]
+        grades = [s.get("grade") for s in subs if s.get("grade")]
+        
+        group_status = statuses[0] if len(set(statuses)) == 1 else "pending"
+        group_grade = grades[0] if len(set(grades)) == 1 and grades else None
+        
+        status_label, status_class = STATUS_LABELS.get(group_status, ("❓ Неизвестно", ""))
+        
+        date_display = due_date
+        if due_date != "Без даты":
+            try:
+                dt = datetime.strptime(due_date, "%Y-%m-%d")
+                date_display = dt.strftime("%d.%m.%Y")
+            except:
+                pass
+        
+        with st.container():
+            st.markdown(f'<div class="date-block">', unsafe_allow_html=True)
+            
+            # Заголовок даты + статус
+            col_title, col_badge = st.columns([3, 1])
+            with col_title:
+                st.markdown(f'<div class="date-title">📅 {date_display}</div>', unsafe_allow_html=True)
+            with col_badge:
+                st.markdown(f'<span class="status-badge {status_class}">{status_label}</span>', unsafe_allow_html=True)
+            
+            # Фотографии
+            photo_cols = st.columns(min(len(subs), 4))
+            for i, sub in enumerate(subs):
+                with photo_cols[i % len(photo_cols)]:
+                    st.image(sub["photo_url"], width=180)
+            
+            # Управление статусом
+            st.markdown("<div style='margin-top: 12px;'></div>", unsafe_allow_html=True)
+            
+            col_chk, col_grade, col_save = st.columns([1, 1, 1])
+            
+            with col_chk:
+                checked = st.checkbox(
+                    "Проверено", 
+                    value=(group_status in ["checked", "graded"]),
+                    key=f"chk_{student_id}_{due_date}"
+                )
+            
+            with col_grade:
+                grade_options = [None, 5, 4, 3, 2, 1]
+                grade_index = grade_options.index(group_grade) if group_grade in grade_options else 0
+                new_grade = st.selectbox(
+                    "Оценка",
+                    grade_options,
+                    index=grade_index,
+                    format_func=lambda x: "—" if x is None else str(x),
+                    key=f"gr_{student_id}_{due_date}"
+                )
+            
+            with col_save:
+                st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
+                if st.button("💾 Сохранить", key=f"save_{student_id}_{due_date}", use_container_width=True):
+                    new_status = "graded" if (checked and new_grade) else ("checked" if checked else "pending")
+                    update_submissions_by_date(student_id, due_date, status=new_status, grade=new_grade)
+                    st.success("Сохранено!")
+                    st.rerun()
+            
+            st.markdown('</div>', unsafe_allow_html=True)
 
 # ============================================================
-# УЧЕНИКИ
+# ГЛАВНАЯ: ШКОЛЫ → КЛАССЫ → УЧЕНИКИ
 # ============================================================
-if page == "👨‍🎓 Ученики":
-    st.title("👨‍🎓 Список учеников")
+def show_schools_page():
+    st.title("👨‍🎓 Ученики")
+    
     students = get_students()
     if not students:
         st.info("Пока нет зарегистрированных учеников.")
-    else:
-        classes = sorted(list(set([s["class_number"] for s in students])))
-        selected_class = st.selectbox("Фильтр по классу:", ["Все"] + classes)
-        if selected_class != "Все":
-            students = [s for s in students if s["class_number"] == selected_class]
-        st.markdown(f"**Всего учеников: {len(students)}**")
-        for student in students:
-            with st.container():
-                col1, col2, col3 = st.columns([1, 3, 1])
-                with col1:
-                    if student.get("avatar_url"):
-                        st.image(student["avatar_url"], width=80)
-                    else:
-                        st.markdown("🧑‍🎓")
-                with col2:
-                    st.markdown(f"**{student['last_name']} {student['first_name']}**")
-                    st.markdown(f"🏫 {student['school']} | 📚 {student['class_number']}")
-                with col3:
-                    st.markdown(f"ID: `{student['id'][:8]}`")
-                st.divider()
+        return
+    
+    # Вкладки школ
+    school_names = list(SCHOOLS_CONFIG.keys())
+    school_tabs = st.tabs(school_names)
+    
+    for i, school in enumerate(school_names):
+        with school_tabs[i]:
+            classes = SCHOOLS_CONFIG[school]
+            class_tabs = st.tabs(classes)
+            
+            for j, cls in enumerate(classes):
+                with class_tabs[j]:
+                    # Фильтруем учеников
+                    class_students = [
+                        s for s in students 
+                        if s["school"] == school and s["class_number"] == cls
+                    ]
+                    
+                    if not class_students:
+                        st.info(f"В {school}, класс {cls} пока нет учеников.")
+                        continue
+                    
+                    st.markdown(f"<p style='color: #6b7280; font-size: 14px; margin-bottom: 16px;'>👥 Всего: {len(class_students)} учеников</p>", unsafe_allow_html=True)
+                    
+                    # Сетка учеников: по 4 в ряд
+                    cols_per_row = 4
+                    for row_idx in range(0, len(class_students), cols_per_row):
+                        row = class_students[row_idx:row_idx + cols_per_row]
+                        cols = st.columns(len(row))
+                        
+                        for idx, student in enumerate(row):
+                            with cols[idx]:
+                                avatar = student.get("avatar_url", "")
+                                name = f"{student['last_name']}<br>{student['first_name']}"
+                                
+                                # Карточка ученика
+                                st.markdown(f"""
+                                <div class="card" style="text-align: center; cursor: pointer; padding: 16px;">
+                                    <img src="{avatar}" class="avatar-circle" 
+                                         style="width: 80px; height: 80px; border-radius: 50%; object-fit: cover;"
+                                         onerror="this.style.display='none'; this.parentElement.querySelector('.fallback').style.display='flex';">
+                                    <div class="fallback" style="width: 80px; height: 80px; border-radius: 50%; background: #e5e7eb; display: none; align-items: center; justify-content: center; margin: 0 auto; font-size: 28px;">🧑‍🎓</div>
+                                    <div class="student-name">{name}</div>
+                                    <div class="student-class">{student['class_number']}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                
+                                # Кнопка под карточкой (невидимая зона клика не работает в Streamlit, поэтому делаем кнопку)
+                                if st.button(
+                                    "Открыть профиль",
+                                    key=f"open_{student['id']}",
+                                    use_container_width=True
+                                ):
+                                    st.session_state.selected_student = student["id"]
+                                    st.session_state.selected_school = school
+                                    st.session_state.selected_class = cls
+                                    st.rerun()
 
 # ============================================================
 # ЗАДАНИЯ
 # ============================================================
-elif page == "📋 Задания":
+def show_homeworks_page():
     st.title("📋 Домашние задания")
+    
     col1, col2 = st.columns([2, 1])
+    
     with col2:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
         st.subheader("➕ Добавить задание")
-        with st.form("add_homework"):
+        with st.form("add_hw"):
             title = st.text_input("Название задания")
             textbook_ref = st.text_input("Номера из учебника", placeholder="№ 145-149, стр. 67")
             due_date = st.date_input("Дата сдачи")
-            submitted = st.form_submit_button("Добавить", use_container_width=True)
+            submitted = st.form_submit_button("Добавить", use_container_width=True, type="primary")
             if submitted:
                 if title:
                     add_homework(title, textbook_ref, due_date)
                     st.success("Задание добавлено!")
                     st.rerun()
                 else:
-                    st.error("Введите название задания")
+                    st.error("Введите название")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
     with col1:
         homeworks = get_homeworks()
         if not homeworks:
-            st.info("Пока нет заданий. Добавьте первое справа →")
+            st.info("Пока нет заданий.")
         else:
-            df = pd.DataFrame(homeworks)
-            df["due_date"] = pd.to_datetime(df["due_date"]).dt.strftime("%d.%m.%Y")
-            df = df.rename(columns={
-                "title": "Название",
-                "textbook_reference": "Номера из учебника",
-                "due_date": "Дата сдачи"
-            })
-            st.dataframe(df[["Название", "Номера из учебника", "Дата сдачи"]], use_container_width=True, hide_index=True)
-
-# ============================================================
-# ПРОВЕРКА РАБОТ
-# ============================================================
-elif page == "📝 Проверка работ":
-    st.title("📝 Проверка домашних заданий")
-    submissions = get_submissions()
-    homeworks = get_homeworks()
-    if not submissions:
-        st.info("Пока нет отправленных работ.")
-    else:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            statuses = ["Все", "pending", "checked", "graded"]
-            selected_status = st.selectbox("Статус:", statuses, format_func=lambda x: status_labels.get(x, x))
-        with col2:
-            students = get_students()
-            student_names = {s["id"]: f"{s['last_name']} {s['first_name']}" for s in students}
-            student_options = ["Все"] + list(student_names.values())
-            selected_student = st.selectbox("Ученик:", student_options)
-        with col3:
-            hw_titles = {h["id"]: h["title"] for h in homeworks}
-            hw_options = ["Все"] + list(hw_titles.values())
-            selected_hw = st.selectbox("Задание:", hw_options)
-        
-        filtered = submissions
-        if selected_status != "Все":
-            filtered = [s for s in filtered if s["status"] == selected_status]
-        if selected_student != "Все":
-            filtered = [s for s in filtered if student_names.get(s["students"]["id"], "") == selected_student]
-        if selected_hw != "Все":
-            filtered = [s for s in filtered if hw_titles.get(s.get("homework_id"), "") == selected_hw]
-        
-        st.markdown(f"**Найдено работ: {len(filtered)}**")
-        
-        for sub in filtered:
-            student = sub["students"]
-            with st.expander(
-                f"{student['last_name']} {student['first_name']} — "
-                f"{student['class_number']} | "
-                f"{sub['submitted_at'][:10]} | "
-                f"Статус: {status_labels.get(sub['status'], sub['status'])}"
-            ):
-                col1, col2 = st.columns([1, 2])
-                with col1:
-                    photo_url = sub.get("photo_url")
-                    if photo_url and isinstance(photo_url, str):
-                        st.image(photo_url, width=300)
-                    else:
-                        st.warning("📷 Фото не загружено")
-                    st.markdown(f"**Отправлено:** {sub['submitted_at'][:16].replace('T', ' ')}")
-                with col2:
-                    hw_options_list = [(None, "— Не выбрано —")] + [(h["id"], h["title"]) for h in homeworks]
-                    current_hw = sub.get("homework_id")
-                    hw_index = next((i for i, (hid, _) in enumerate(hw_options_list) if hid == current_hw), 0)
-                    new_hw = st.selectbox("Задание:", hw_options_list, index=hw_index, format_func=lambda x: x[1], key=f"hw_{sub['id']}")
-                    
-                    grade_options = [None, 5, 4, 3, 2, 1]
-                    current_grade = sub.get("grade")
-                    grade_index = grade_options.index(current_grade) if current_grade in grade_options else 0
-                    new_grade = st.selectbox("Оценка:", grade_options, index=grade_index, format_func=lambda x: "—" if x is None else str(x), key=f"grade_{sub['id']}")
-                    
-                    current_comment = sub.get("teacher_comment") or ""
-                    new_comment = st.text_area("Комментарий учителя:", value=current_comment, key=f"comment_{sub['id']}")
-                    
-                    status_options = ["pending", "checked", "graded"]
-                    status_index = status_options.index(sub["status"]) if sub["status"] in status_options else 0
-                    new_status = st.selectbox("Статус:", status_options, index=status_index, format_func=lambda x: status_labels.get(x, x), key=f"status_{sub['id']}")
-                    
-                    if st.button("💾 Сохранить", key=f"save_{sub['id']}", use_container_width=True):
-                        update_submission(sub["id"], homework_id=new_hw[0], grade=new_grade, teacher_comment=new_comment if new_comment else None, status=new_status)
-                        st.success("Сохранено!")
-                        st.rerun()
+            for hw in homeworks:
+                due = hw.get("due_date", "")
+                due_str = ""
+                if due:
+                    try:
+                        due_str = datetime.strptime(due, "%Y-%m-%d").strftime("%d.%m.%Y")
+                    except:
+                        due_str = due
+                
+                st.markdown(f"""
+                <div class="card" style="border-left: 4px solid #667eea;">
+                    <h4 style="margin: 0 0 6px 0; color: #1f2937;">{hw['title']}</h4>
+                    <p style="margin: 0; color: #6b7280; font-size: 14px;">📖 {hw.get('textbook_reference', '—')} &nbsp;|&nbsp; 📅 {due_str or 'Без даты'}</p>
+                </div>
+                """, unsafe_allow_html=True)
 
 # ============================================================
 # СТАТИСТИКА
 # ============================================================
-elif page == "📊 Статистика":
+def show_stats_page():
     st.title("📊 Статистика")
+    
     students = get_students()
-    submissions = get_submissions()
+    submissions = supabase.table("submissions").select("*").execute().data or []
     homeworks = get_homeworks()
     
+    # Метрики
     col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Всего учеников", len(students))
-    with col2:
-        st.metric("Всего заданий", len(homeworks))
-    with col3:
-        st.metric("Отправлено работ", len(submissions))
-    with col4:
-        graded = len([s for s in submissions if s.get("grade")])
-        st.metric("Оценено работ", graded)
+    metrics = [
+        ("👨‍🎓 Учеников", len(students)),
+        ("📋 Заданий", len(homeworks)),
+        ("📝 Работ", len(submissions)),
+        ("✅ Оценено", len([s for s in submissions if s.get("grade")])),
+    ]
+    for col, (label, value) in zip([col1, col2, col3, col4], metrics):
+        with col:
+            st.markdown(f"""
+            <div class="card" style="text-align: center; padding: 16px;">
+                <div style="font-size: 24px; font-weight: 700; color: #667eea;">{value}</div>
+                <div style="font-size: 13px; color: #6b7280; margin-top: 4px;">{label}</div>
+            </div>
+            """, unsafe_allow_html=True)
     
-    st.markdown("---")
+    st.markdown("<div style='height: 16px'></div>", unsafe_allow_html=True)
     
-    if students:
-        st.subheader("Ученики по классам")
-        class_counts = {}
-        for s in students:
-            cn = s["class_number"]
-            class_counts[cn] = class_counts.get(cn, 0) + 1
-        df_classes = pd.DataFrame([{"Класс": k, "Количество": v} for k, v in sorted(class_counts.items())])
-        st.bar_chart(df_classes.set_index("Класс"))
+    col_a, col_b = st.columns(2)
     
-    if submissions:
-        st.subheader("Статус работ")
-        status_counts = {}
-        for s in submissions:
-            st_val = s["status"]
-            status_counts[st_val] = status_counts.get(st_val, 0) + 1
-        df_status = pd.DataFrame([{"Статус": status_labels.get(k, k), "Количество": v} for k, v in status_counts.items()])
-        st.bar_chart(df_status.set_index("Статус"))
+    with col_a:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("По классам")
+        if students:
+            class_counts = {}
+            for s in students:
+                key = f"{s['school'][:10]}... — {s['class_number']}" if len(s['school']) > 10 else f"{s['school']} — {s['class_number']}"
+                class_counts[key] = class_counts.get(key, 0) + 1
+            
+            import pandas as pd
+            df = pd.DataFrame([{"Класс": k, "Кол-во": v} for k, v in sorted(class_counts.items())])
+            st.bar_chart(df.set_index("Класс"), use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col_b:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("По статусам")
+        if submissions:
+            status_counts = {}
+            for s in submissions:
+                st_val = s["status"]
+                label = STATUS_LABELS.get(st_val, (st_val, ""))[0]
+                status_counts[label] = status_counts.get(label, 0) + 1
+            
+            import pandas as pd
+            df = pd.DataFrame([{"Статус": k, "Кол-во": v} for k, v in status_counts.items()])
+            st.bar_chart(df.set_index("Статус"), use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# ============================================================
+# РОУТИНГ
+# ============================================================
+if st.session_state.selected_student:
+    show_student_page(st.session_state.selected_student)
+else:
+    page = st.sidebar.radio("Раздел:", ["👨‍🎓 Ученики", "📋 Задания", "📊 Статистика"], label_visibility="collapsed")
+    
+    if page == "👨‍🎓 Ученики":
+        show_schools_page()
+    elif page == "📋 Задания":
+        show_homeworks_page()
+    elif page == "📊 Статистика":
+        show_stats_page()
