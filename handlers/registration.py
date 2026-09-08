@@ -1,5 +1,5 @@
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -9,12 +9,17 @@ from keyboards.main_menu import get_main_menu
 
 router = Router()
 
+# Данные школ и классов
+SCHOOLS = {
+    "СОШ №1 г. Голицыно": ["10", "11"],
+    "Маловяземская СОШ": ["9А", "9Б", "9В", "10", "11"],
+}
 
 class Registration(StatesGroup):
     first_name = State()
     last_name = State()
-    class_number = State()
     school = State()
+    class_number = State()
     avatar = State()
 
 
@@ -55,34 +60,54 @@ async def process_last_name(message: Message, state: FSMContext):
         await message.answer("❌ Фамилия должна быть от 2 до 50 символов. Попробуйте ещё раз:")
         return
     await state.update_data(last_name=message.text.strip())
+    
+    # Шаг 3: выбор школы кнопками
+    buttons = [[KeyboardButton(text=school)] for school in SCHOOLS.keys()]
+    keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=True)
+    
+    await message.answer("Шаг 3/5: Выберите *школу*:", parse_mode="Markdown", reply_markup=keyboard)
+    await state.set_state(Registration.school)
+
+
+@router.message(Registration.school)
+async def process_school(message: Message, state: FSMContext):
+    school = message.text.strip()
+    if school not in SCHOOLS:
+        await message.answer("❌ Пожалуйста, выберите школу из списка кнопок.")
+        return
+    
+    await state.update_data(school=school)
+    
+    # Шаг 4: выбор класса — зависит от школы
+    classes = SCHOOLS[school]
+    buttons = [[KeyboardButton(text=cls)] for cls in classes]
+    keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=True)
+    
     await message.answer(
-        "Шаг 3/5: Напишите *класс* (например: 10А, 9Б, 11В):",
-        parse_mode="Markdown"
+        f"Шаг 4/5: Выберите *класс* для {school}:",
+        parse_mode="Markdown",
+        reply_markup=keyboard
     )
     await state.set_state(Registration.class_number)
 
 
 @router.message(Registration.class_number)
 async def process_class(message: Message, state: FSMContext):
-    class_input = message.text.strip().upper()
-    if len(class_input) < 2 or len(class_input) > 5:
-        await message.answer("❌ Некорректный класс. Примеры: 10А, 9Б. Попробуйте ещё раз:")
+    data = await state.get_data()
+    school = data.get("school")
+    available_classes = SCHOOLS.get(school, [])
+    
+    class_input = message.text.strip()
+    if class_input not in available_classes:
+        await message.answer(f"❌ Некорректный класс. Для {school} доступны: {', '.join(available_classes)}")
         return
+    
     await state.update_data(class_number=class_input)
-    await message.answer("Шаг 4/5: Напишите *название школы*:", parse_mode="Markdown")
-    await state.set_state(Registration.school)
-
-
-@router.message(Registration.school)
-async def process_school(message: Message, state: FSMContext):
-    if len(message.text) < 3:
-        await message.answer("❌ Название школы слишком короткое. Попробуйте ещё раз:")
-        return
-    await state.update_data(school=message.text.strip())
     await message.answer(
         "Шаг 5/5: Отправьте *фотографию вашего лица* (аватарку), чтобы учитель мог вас узнать.\n\n"
         "📎 Прикрепите фото прямо в чат.",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=get_main_menu()  # убираем кнопки школ/классов
     )
     await state.set_state(Registration.avatar)
 
