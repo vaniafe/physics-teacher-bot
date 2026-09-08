@@ -2,9 +2,10 @@ import streamlit as st
 from supabase import create_client, Client
 from collections import defaultdict
 from datetime import datetime
+import extra_streamlit_components as stx
 
 # ============================================================
-# НАСТРОЙКА СТРАНИЦЫ (должна быть ПЕРВОЙ!)
+# НАСТРОЙКА СТРАНИЦЫ
 # ============================================================
 st.set_page_config(
     page_title="Проверка домашних заданий — Физика",
@@ -13,19 +14,20 @@ st.set_page_config(
 )
 
 # ============================================================
+# COOKIE MANAGER (для запоминания логина)
+# ============================================================
+cookie_manager = stx.CookieManager()
+
+# ============================================================
 # СТИЛИ (Sferum-like)
 # ============================================================
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-html, body, [class*="css"] {
-    font-family: 'Inter', sans-serif;
-}
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
-.main {
-    background: linear-gradient(135deg, #f5f7fa 0%, #e4e8ec 100%);
-}
+.main { background: linear-gradient(135deg, #f5f7fa 0%, #e4e8ec 100%); }
 
 .card {
     background: #ffffff;
@@ -35,15 +37,13 @@ html, body, [class*="css"] {
     margin-bottom: 16px;
     transition: transform 0.15s, box-shadow 0.15s;
 }
-
 .card:hover {
     transform: translateY(-2px);
     box-shadow: 0 6px 24px rgba(0,0,0,0.10);
 }
 
 .avatar-circle {
-    width: 80px;
-    height: 80px;
+    width: 80px; height: 80px;
     border-radius: 50%;
     object-fit: cover;
     border: 3px solid #ffffff;
@@ -51,42 +51,11 @@ html, body, [class*="css"] {
 }
 
 .avatar-large {
-    width: 140px;
-    height: 140px;
+    width: 140px; height: 140px;
     border-radius: 50%;
     object-fit: cover;
     border: 4px solid #ffffff;
     box-shadow: 0 4px 16px rgba(0,0,0,0.15);
-}
-
-.student-name {
-    font-size: 15px;
-    font-weight: 600;
-    color: #1a1a1a;
-    margin-top: 8px;
-    text-align: center;
-}
-
-.student-class {
-    font-size: 13px;
-    color: #6b7280;
-    text-align: center;
-}
-
-.btn-back {
-    background: #ffffff;
-    border: 1px solid #e5e7eb;
-    border-radius: 10px;
-    padding: 8px 16px;
-    color: #374151;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.15s;
-}
-
-.btn-back:hover {
-    background: #f3f4f6;
-    border-color: #d1d5db;
 }
 
 .profile-header {
@@ -114,16 +83,6 @@ html, body, [class*="css"] {
     margin-bottom: 12px;
 }
 
-.hw-photo {
-    border-radius: 12px;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
-    transition: transform 0.2s;
-}
-
-.hw-photo:hover {
-    transform: scale(1.03);
-}
-
 .status-badge {
     display: inline-block;
     padding: 4px 12px;
@@ -135,26 +94,6 @@ html, body, [class*="css"] {
 .status-pending { background: #fef3c7; color: #92400e; }
 .status-checked { background: #d1fae5; color: #065f46; }
 .status-graded { background: #dbeafe; color: #1e40af; }
-
-.stTabs [data-baseweb="tab-list"] {
-    gap: 8px;
-}
-
-.stTabs [data-baseweb="tab"] {
-    background: #ffffff;
-    border-radius: 10px 10px 0 0;
-    padding: 10px 20px;
-    font-weight: 500;
-    color: #6b7280;
-    border: none;
-    box-shadow: 0 -2px 8px rgba(0,0,0,0.03);
-}
-
-.stTabs [aria-selected="true"] {
-    background: #667eea !important;
-    color: #ffffff !important;
-    font-weight: 600;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -163,7 +102,6 @@ html, body, [class*="css"] {
 # ============================================================
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
-
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ============================================================
@@ -181,16 +119,18 @@ STATUS_LABELS = {
 }
 
 # ============================================================
-# СОСТОЯНИЕ
+# СОСТОЯНИЕ + COOKIES
 # ============================================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "selected_student" not in st.session_state:
     st.session_state.selected_student = None
-if "selected_school" not in st.session_state:
-    st.session_state.selected_school = None
-if "selected_class" not in st.session_state:
-    st.session_state.selected_class = None
+
+# Проверяем cookie при загрузке (автовход)
+auth_cookie = cookie_manager.get("physics_auth")
+if auth_cookie == "teacher_logged_in" and not st.session_state.authenticated:
+    st.session_state.authenticated = True
+    st.rerun()
 
 # ============================================================
 # АВТОРИЗАЦИЯ
@@ -209,9 +149,15 @@ if not st.session_state.authenticated:
         login = st.text_input("Логин", key="login_input")
         password = st.text_input("Пароль", type="password", key="pass_input")
         
+        col_remember, _ = st.columns([1, 2])
+        with col_remember:
+            remember = st.checkbox("Запомнить меня", value=True)
+        
         if st.button("Войти", use_container_width=True, type="primary"):
             if login == "teacher" and password == "physics2026":
                 st.session_state.authenticated = True
+                if remember:
+                    cookie_manager.set("physics_auth", "teacher_logged_in", expires_at=datetime(2027, 1, 1))
                 st.rerun()
             else:
                 st.error("Неверный логин или пароль")
@@ -229,24 +175,18 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     
     st.markdown("---")
-    
     if st.button("🏠 Главная", use_container_width=True):
         st.session_state.selected_student = None
-        st.session_state.selected_school = None
-        st.session_state.selected_class = None
         st.rerun()
-    
     st.markdown("---")
-    
     if st.button("🚪 Выйти", use_container_width=True):
         st.session_state.authenticated = False
-        st.session_state.selected_student = None
+        cookie_manager.delete("physics_auth")
         st.rerun()
 
 # ============================================================
 # ФУНКЦИИ
 # ============================================================
-
 def get_students():
     result = supabase.table("students").select("*").order("last_name").execute()
     return result.data or []
@@ -264,7 +204,6 @@ def get_homeworks():
     return result.data or []
 
 def update_submissions_by_date(student_id, due_date, status=None, grade=None):
-    """Обновляет ВСЕ работы ученика на указанную дату."""
     data = {}
     if status is not None:
         data["status"] = status
@@ -295,19 +234,16 @@ def show_student_page(student_id):
     
     submissions = get_submissions_by_student(student_id)
     
-    # Кнопка назад
     col_back, _ = st.columns([1, 5])
     with col_back:
         if st.button("← Назад к списку", use_container_width=True):
             st.session_state.selected_student = None
             st.rerun()
     
-    # Шапка профиля
     st.markdown(f"""
     <div class="profile-header">
         <div style="display: flex; align-items: center; gap: 24px;">
-            <img src="{student.get('avatar_url', '')}" class="avatar-large" 
-                 onerror="this.style.display='none'; this.parentElement.innerHTML += '<div style=\\'width:140px;height:140px;border-radius:50%;background:#fff3;display:flex;align-items:center;justify-content:center;font-size:48px;\\'>🧑‍🎓</div>'">
+            <img src="{student.get('avatar_url', '')}" class="avatar-large" onerror="this.style.display='none'">
             <div>
                 <h1 style="margin: 0; font-size: 28px; font-weight: 700;">{student['last_name']} {student['first_name']}</h1>
                 <p style="margin: 8px 0 0 0; font-size: 16px; opacity: 0.9;">
@@ -325,7 +261,6 @@ def show_student_page(student_id):
         st.info("Ученик пока не отправлял домашние задания.")
         return
     
-    # Группировка по датам
     groups = defaultdict(list)
     for sub in submissions:
         key = sub.get("due_date") or "Без даты"
@@ -334,13 +269,10 @@ def show_student_page(student_id):
     st.subheader("📸 Домашние задания")
     
     for due_date, subs in sorted(groups.items(), key=lambda x: (x[0] == "Без даты", x[0]), reverse=True):
-        # Определяем общий статус и оценку для группы
         statuses = [s["status"] for s in subs]
         grades = [s.get("grade") for s in subs if s.get("grade")]
-        
         group_status = statuses[0] if len(set(statuses)) == 1 else "pending"
         group_grade = grades[0] if len(set(grades)) == 1 and grades else None
-        
         status_label, status_class = STATUS_LABELS.get(group_status, ("❓ Неизвестно", ""))
         
         date_display = due_date
@@ -354,20 +286,17 @@ def show_student_page(student_id):
         with st.container():
             st.markdown(f'<div class="date-block">', unsafe_allow_html=True)
             
-            # Заголовок даты + статус
             col_title, col_badge = st.columns([3, 1])
             with col_title:
                 st.markdown(f'<div class="date-title">📅 {date_display}</div>', unsafe_allow_html=True)
             with col_badge:
                 st.markdown(f'<span class="status-badge {status_class}">{status_label}</span>', unsafe_allow_html=True)
             
-            # Фотографии
             photo_cols = st.columns(min(len(subs), 4))
             for i, sub in enumerate(subs):
                 with photo_cols[i % len(photo_cols)]:
                     st.image(sub["photo_url"], width=180)
             
-            # Управление статусом
             st.markdown("<div style='margin-top: 12px;'></div>", unsafe_allow_html=True)
             
             col_chk, col_grade, col_save = st.columns([1, 1, 1])
@@ -411,7 +340,6 @@ def show_schools_page():
         st.info("Пока нет зарегистрированных учеников.")
         return
     
-    # Вкладки школ
     school_names = list(SCHOOLS_CONFIG.keys())
     school_tabs = st.tabs(school_names)
     
@@ -422,11 +350,7 @@ def show_schools_page():
             
             for j, cls in enumerate(classes):
                 with class_tabs[j]:
-                    # Фильтруем учеников
-                    class_students = [
-                        s for s in students 
-                        if s["school"] == school and s["class_number"] == cls
-                    ]
+                    class_students = [s for s in students if s["school"] == school and s["class_number"] == cls]
                     
                     if not class_students:
                         st.info(f"В {school}, класс {cls} пока нет учеников.")
@@ -434,7 +358,6 @@ def show_schools_page():
                     
                     st.markdown(f"<p style='color: #6b7280; font-size: 14px; margin-bottom: 16px;'>👥 Всего: {len(class_students)} учеников</p>", unsafe_allow_html=True)
                     
-                    # Сетка учеников: по 4 в ряд
                     cols_per_row = 4
                     for row_idx in range(0, len(class_students), cols_per_row):
                         row = class_students[row_idx:row_idx + cols_per_row]
@@ -445,27 +368,16 @@ def show_schools_page():
                                 avatar = student.get("avatar_url", "")
                                 name = f"{student['last_name']}<br>{student['first_name']}"
                                 
-                                # Карточка ученика
                                 st.markdown(f"""
-                                <div class="card" style="text-align: center; cursor: pointer; padding: 16px;">
-                                    <img src="{avatar}" class="avatar-circle" 
-                                         style="width: 80px; height: 80px; border-radius: 50%; object-fit: cover;"
-                                         onerror="this.style.display='none'; this.parentElement.querySelector('.fallback').style.display='flex';">
-                                    <div class="fallback" style="width: 80px; height: 80px; border-radius: 50%; background: #e5e7eb; display: none; align-items: center; justify-content: center; margin: 0 auto; font-size: 28px;">🧑‍🎓</div>
-                                    <div class="student-name">{name}</div>
-                                    <div class="student-class">{student['class_number']}</div>
+                                <div class="card" style="text-align: center; padding: 16px;">
+                                    <img src="{avatar}" class="avatar-circle" style="width: 80px; height: 80px; border-radius: 50%; object-fit: cover;" onerror="this.style.display='none'">
+                                    <div style="font-size: 15px; font-weight: 600; color: #1a1a1a; margin-top: 8px;">{name}</div>
+                                    <div style="font-size: 13px; color: #6b7280;">{student['class_number']}</div>
                                 </div>
                                 """, unsafe_allow_html=True)
                                 
-                                # Кнопка под карточкой (невидимая зона клика не работает в Streamlit, поэтому делаем кнопку)
-                                if st.button(
-                                    "Открыть профиль",
-                                    key=f"open_{student['id']}",
-                                    use_container_width=True
-                                ):
+                                if st.button("Открыть профиль", key=f"open_{student['id']}", use_container_width=True):
                                     st.session_state.selected_student = student["id"]
-                                    st.session_state.selected_school = school
-                                    st.session_state.selected_class = cls
                                     st.rerun()
 
 # ============================================================
@@ -524,7 +436,6 @@ def show_stats_page():
     submissions = supabase.table("submissions").select("*").execute().data or []
     homeworks = get_homeworks()
     
-    # Метрики
     col1, col2, col3, col4 = st.columns(4)
     metrics = [
         ("👨‍🎓 Учеников", len(students)),
