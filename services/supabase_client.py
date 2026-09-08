@@ -57,6 +57,7 @@ async def create_submission(data: dict) -> dict:
     return result.data[0] if result.data else None
 
 
+
 async def get_homeworks() -> list:
     """Получает список всех заданий."""
     result = await asyncio.to_thread(
