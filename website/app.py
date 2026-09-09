@@ -256,6 +256,40 @@ def show_student_page(student_id):
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+     # Управление статусом + смена фото
+            st.markdown("<div style='margin-top: 12px;'></div>", unsafe_allow_html=True)
+            
+            col_chk, col_grade, col_photo, col_save = st.columns([1, 1, 1, 1])
+            
+            with col_chk:
+                checked = st.checkbox(
+                    "Проверено", 
+                    value=(group_status in ["checked", "graded"]),
+                    key=f"chk_{student_id}_{due_date}"
+                )
+            
+            with col_grade:
+                grade_options = [None, 5, 4, 3, 2, 1]
+                grade_index = grade_options.index(group_grade) if group_grade in grade_options else 0
+                new_grade = st.selectbox(
+                    "Оценка",
+                    grade_options,
+                    index=grade_index,
+                    format_func=lambda x: "—" if x is None else str(x),
+                    key=f"gr_{student_id}_{due_date}"
+                )
+            
+            with col_save:
+                st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
+                if st.button("💾 Сохранить", key=f"save_{student_id}_{due_date}", use_container_width=True):
+                    new_status = "graded" if (checked and new_grade) else ("checked" if checked else "pending")
+                    update_submissions_by_date(student_id, due_date, status=new_status, grade=new_grade)
+                    st.success("Сохранено!")
+                    st.rerun()
+            
+            # Разделитель
+            st.markdown("<hr style='margin: 16px 0; border: none; border-top: 1px solid #e5e7eb;'>", unsafe_allow_html=True)
     
     if not submissions:
         st.info("Ученик пока не отправлял домашние задания.")
