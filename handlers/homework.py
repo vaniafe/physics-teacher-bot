@@ -4,7 +4,10 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from services.supabase_client import get_student, upload_homework_photo, create_submission
+from services.supabase_client import (
+    get_student, upload_homework_photo, create_submission,
+    check_avatar_update_needed, update_avatar
+)
 from keyboards.main_menu import get_main_menu
 
 router = Router()
@@ -13,6 +16,10 @@ router = Router()
 class HomeworkSubmission(StatesGroup):
     photo = State()
     due_date = State()
+
+
+class AvatarUpdate(StatesGroup):
+    photo = State()
 
 
 @router.message(Command("send"))
@@ -27,7 +34,7 @@ async def cmd_send(message: Message):
 
 @router.message(F.photo)
 async def process_homework_photo(message: Message, state: FSMContext, bot: Bot):
-    """Обработка фото домашнего задания."""
+    """Обработка фото — либо домашка, либо обновление аватарки."""
     
     # Проверяем, зарегистрирован ли ученик
     student = await get_student(message.from_user.id)
@@ -38,13 +45,36 @@ async def process_homework_photo(message: Message, state: FSMContext, bot: Bot):
         )
         return
     
-    # Если мы уже в процессе отправки (ждём дату) — игнорируем новое фото
+    # Проверяем, не требуется ли обновление аватарки
+    needs_update = await check_avatar_update_needed(message.from_user.id)
+    if needs_update:
+        # Если мы уже ждём фото для аватарки
+        current_state = await state.get_state()
+        if current_state == AvatarUpdate.photo:
+            await process_avatar_update(message, state, bot, student)
+            return
+        
+        # Первое фото после запроса — предлагаем обновить аватарку
+        await message.answer(
+            "📸 Учитель просит вас обновить фотографию профиля!\n\n"
+            "Пожалуйста, отправьте новое фото вашего лица (аватарку). "
+            "После этого вы сможете снова отправлять домашние задания.",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="📷 Отправить новое фото")]],
+                resize_keyboard=True,
+                one_time_keyboard=True
+            )
+        )
+        await state.set_state(AvatarUpdate.photo)
+        return
+    
+    # Если мы уже в процессе отправки домашки (ждём дату) — игнорируем новое фото
     current_state = await state.get_state()
     if current_state == HomeworkSubmission.due_date:
         await message.answer("⏳ Сначала укажите дату для предыдущего фото, или нажмите /cancel")
         return
     
-    # Скачиваем фото
+    # Скачиваем фото домашки
     photo = message.photo[-1]
     file = await bot.get_file(photo.file_id)
     file_bytes = await bot.download_file(file.file_path)
@@ -74,6 +104,39 @@ async def process_homework_photo(message: Message, state: FSMContext, bot: Bot):
         reply_markup=keyboard
     )
     await state.set_state(HomeworkSubmission.due_date)
+
+
+async def process_avatar_update(message: Message, state: FSMContext, bot: Bot, student: dict):
+    """Обработка новой аватарки."""
+    photo = message.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    file_bytes = await bot.download_file(file.file_path)
+    
+    # Генерируем имя файла
+    import uuid
+    filename = f"{message.from_user.id}_{uuid.uuid4().hex[:8]}.jpg"
+    
+    # Загружаем в Storage
+    try:
+        from services.supabase_client import upload_avatar
+        avatar_url = await upload_avatar(file_bytes.read(), filename)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте ещё раз.")
+        return
+    
+    # Обновляем в БД
+    try:
+        await update_avatar(message.from_user.id, avatar_url)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка сохранения: {e}")
+        return
+    
+    await state.clear()
+    await message.answer(
+        "✅ Фотография профиля обновлена!\n\n"
+        "Теперь вы можете снова отправлять домашние задания.",
+        reply_markup=get_main_menu()
+    )
 
 
 @router.message(HomeworkSubmission.due_date, F.text == "📝 Ввести вручную")
