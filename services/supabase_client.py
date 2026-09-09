@@ -56,6 +56,23 @@ async def create_submission(data: dict) -> dict:
     )
     return result.data[0] if result.data else None
 
+async def check_avatar_update_needed(telegram_id: int) -> bool:
+    """Проверяет, нужно ли ученику обновить аватарку."""
+    result = await asyncio.to_thread(
+        lambda: supabase.table("students").select("needs_avatar_update").eq("telegram_id", telegram_id).execute()
+    )
+    if result.data and len(result.data) > 0:
+        return result.data[0].get("needs_avatar_update", False)
+    return False
+
+async def update_avatar(telegram_id: int, avatar_url: str) -> None:
+    """Обновляет аватарку и сбрасывает флаг."""
+    await asyncio.to_thread(
+        lambda: supabase.table("students").update({
+            "avatar_url": avatar_url,
+            "needs_avatar_update": False
+        }).eq("telegram_id", telegram_id).execute()
+    )
 
 
 async def get_homeworks() -> list:
