@@ -7,7 +7,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 
 from config import BOT_TOKEN, PROXY_URL
-from handlers import registration, homework
+from handlers import start, registration, account, homework
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -26,8 +26,10 @@ async def main():
     
     dp = Dispatcher()
     
-    # Подключаем роутеры
+    # Подключаем роутеры (порядок важен!)
+    dp.include_router(start.router)
     dp.include_router(registration.router)
+    dp.include_router(account.router)
     dp.include_router(homework.router)
     
     # Удаляем вебхук и запускаем polling
