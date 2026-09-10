@@ -102,3 +102,32 @@ async def get_calendar_dates(school: str, class_number: str) -> list:
         .order("date").execute()
     )
     return [r["date"] for r in result.data]
+
+
+
+def _storage_path(url: str, bucket: str):
+    """Извлекает путь файла из публичного URL Supabase Storage."""
+    if not url:
+        return None
+    marker = f"/object/public/{bucket}/"
+    if marker not in url:
+        return None
+    return url.split(marker, 1)[1].split("?")[0]
+
+
+async def delete_avatar(file_url: str):
+    """Удаляет аватарку из Storage по её URL (старое фото профиля)."""
+    path = _storage_path(file_url, "avatars")
+    if path:
+        await asyncio.to_thread(
+            lambda: supabase.storage.from_("avatars").remove([path])
+        )
+
+
+async def delete_homework_photo(file_url: str):
+    """Удаляет фото работы из Storage по её URL."""
+    path = _storage_path(file_url, "homework-photos")
+    if path:
+        await asyncio.to_thread(
+            lambda: supabase.storage.from_("homework-photos").remove([path])
+        )
