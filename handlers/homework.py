@@ -7,7 +7,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from services.supabase_client import (
-    get_student, upload_homework_photo, create_submission, get_calendar_dates
+    get_student, upload_homework_photo, create_submission, get_calendar_dates,
+    upload_avatar, delete_avatar, update_student
 )
 from keyboards.main_menu import get_main_menu
 
@@ -15,7 +16,8 @@ router = Router()
 
 
 class HomeworkStates(StatesGroup):
-    waiting_photo = State()   # ученик прикрепляет фото к выбранной дате
+    waiting_photo = State()      # ученик прикрепляет фото работы к выбранной дате
+    waiting_avatar = State()     # ученик должен обновить фото профиля
 
 
 def _fmt_date(iso_date: str) -> str:
@@ -36,7 +38,7 @@ def _homework_keyboard() -> InlineKeyboardMarkup:
 
 @router.message(F.text == "📸 Отправить домашнее задание")
 async def start_homework(message: Message, state: FSMContext):
-    """Начало сдачи работы: предлагаем даты из календаря учителя."""
+    """Начало сдачи работы. Если нужно обновить фото профиля — сначала оно."""
 
     # Проверяем, зарегистрирован ли ученик
     student = await get_student(message.from_user.id)
@@ -44,6 +46,16 @@ async def start_homework(message: Message, state: FSMContext):
         await message.answer(
             "❌ Вы ещё не зарегистрированы!\n\n"
             "Нажмите /start, чтобы пройти регистрацию."
+        )
+        return
+
+    # У учителя включён запрос на смену фото профиля
+    if student.get("needs_avatar_update"):
+        await state.set_state(HomeworkStates.waiting_avatar)
+        await message.answer(
+            "📸 Необходимо обновить фото профиля!\n\n"
+            "Прикрепите новую фотографию вашего лица.\n"
+            "После этого вы сможете отправлять домашние задания."
         )
         return
 
@@ -71,6 +83,67 @@ async def start_homework(message: Message, state: FSMContext):
     await message.answer(
         "📅 Выберите дату сдачи домашнего задания:",
         reply_markup=keyboard
+    )
+
+
+@router.message(HomeworkStates.waiting_avatar, F.photo)
+async def process_avatar_update(message: Message, state: FSMContext, bot: Bot):
+    """Обновление фото профиля: удаляем старое фото, сохраняем новое,
+    снимаем галочку needs_avatar_update."""
+    student = await get_student(message.from_user.id)
+    if not student:
+        await state.clear()
+        await message.answer("❌ Сначала зарегистрируйтесь: /start")
+        return
+
+    # Скачиваем новое фото
+    photo = message.photo[-1]
+    try:
+        file = await bot.get_file(photo.file_id)
+        file_bytes = await bot.download_file(file.file_path)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте отправить ещё раз.")
+        return
+
+    filename = f"{message.from_user.id}_{uuid.uuid4().hex[:8]}.jpg"
+
+    try:
+        avatar_url = await upload_avatar(file_bytes.read(), filename)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте отправить ещё раз.")
+        return
+
+    # Удаляем старое фото из Storage (если оно есть)
+    old_url = student.get("avatar_url")
+    if old_url:
+        try:
+            await delete_avatar(old_url)
+        except Exception:
+            pass  # не критично
+
+    # Сохраняем новое фото и снимаем галочку
+    try:
+        await update_student(student["id"], {
+            "avatar_url": avatar_url,
+            "needs_avatar_update": False,
+        })
+    except Exception as e:
+        await message.answer(f"❌ Ошибка сохранения: {e}")
+        return
+
+    await state.clear()
+    await message.answer(
+        "✅ Фото профиля обновлено!\n\n"
+        "Теперь вы можете отправлять домашние задания.",
+        reply_markup=get_main_menu()
+    )
+
+
+@router.message(HomeworkStates.waiting_avatar)
+async def process_avatar_update_invalid(message: Message):
+    await message.answer(
+        "❌ Пожалуйста, отправьте именно *фотографию* (не текст или файл).",
+        parse_mode="Markdown"
     )
 
 
@@ -181,9 +254,15 @@ async def stray_photo(message: Message, state: FSMContext):
         return  # сообщение обработается другим обработчиком
     student = await get_student(message.from_user.id)
     if student:
-        await message.answer(
-            "Чтобы сдать работу, нажмите «📸 Отправить домашнее задание» "
-            "и выберите дату сдачи."
-        )
+        if student.get("needs_avatar_update"):
+            await message.answer(
+                "📸 Учитель запросил обновление фото профиля.\n"
+                "Нажмите «📸 Отправить домашнее задание» и прикрепите своё фото."
+            )
+        else:
+            await message.answer(
+                "Чтобы сдать работу, нажмите «📸 Отправить домашнее задание» "
+                "и выберите дату сдачи."
+            )
     else:
         await message.answer("❌ Вы ещё не зарегистрированы. Нажмите /start.")
