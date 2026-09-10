@@ -1,213 +1,189 @@
+import uuid
+from datetime import datetime, date, timedelta
+
 from aiogram import Router, F, Bot
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.filters import Command
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from services.supabase_client import (
-    get_student, upload_homework_photo, create_submission,
-    check_avatar_update_needed, update_avatar
+    get_student, upload_homework_photo, create_submission, get_calendar_dates
 )
 from keyboards.main_menu import get_main_menu
 
 router = Router()
 
 
-class HomeworkSubmission(StatesGroup):
-    photo = State()
-    due_date = State()
+class HomeworkStates(StatesGroup):
+    waiting_photo = State()   # ученик прикрепляет фото к выбранной дате
 
 
-class AvatarUpdate(StatesGroup):
-    photo = State()
+def _fmt_date(iso_date: str) -> str:
+    """'2026-09-15' -> '15.09.2026'"""
+    try:
+        return datetime.strptime(iso_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+    except ValueError:
+        return iso_date
 
 
-@router.message(Command("send"))
-async def cmd_send(message: Message):
-    """Подсказка, как отправить домашнее задание."""
-    await message.answer(
-        "📸 Просто отправьте фото вашего домашнего задания прямо в этот чат.\n\n"
-        "Я спрошу дату, на которую оно задано, и сохраню всё.",
-        reply_markup=get_main_menu()
-    )
+def _homework_keyboard() -> InlineKeyboardMarkup:
+    """Кнопки после загрузки фото."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить ещё фото", callback_data="hw:add")],
+        [InlineKeyboardButton(text="✅ Завершить", callback_data="hw:finish")],
+    ])
 
 
-@router.message(F.photo)
-async def process_homework_photo(message: Message, state: FSMContext, bot: Bot):
-    """Обработка фото — либо домашка, либо обновление аватарки."""
-    
+@router.message(F.text == "📸 Отправить домашнее задание")
+async def start_homework(message: Message, state: FSMContext):
+    """Начало сдачи работы: предлагаем даты из календаря учителя."""
+
     # Проверяем, зарегистрирован ли ученик
     student = await get_student(message.from_user.id)
     if not student:
         await message.answer(
             "❌ Вы ещё не зарегистрированы!\n\n"
-            "Отправьте /start, чтобы пройти регистрацию."
+            "Нажмите /start, чтобы пройти регистрацию."
         )
         return
-    
-    # Проверяем, не требуется ли обновление аватарки
-    needs_update = await check_avatar_update_needed(message.from_user.id)
-    if needs_update:
-        # Если мы уже ждём фото для аватарки
-        current_state = await state.get_state()
-        if current_state == AvatarUpdate.photo:
-            await process_avatar_update(message, state, bot, student)
-            return
-        
-        # Первое фото после запроса — предлагаем обновить аватарку
+
+    # Даты из календаря, открытые учителем для этого класса
+    dates = await get_calendar_dates(student["school"], student["class_number"])
+
+    # Только диапазон: вчера — сегодня+5 дней
+    today = date.today()
+    lo = (today - timedelta(days=1)).isoformat()
+    hi = (today + timedelta(days=5)).isoformat()
+    allowed = [d for d in dates if lo <= d <= hi]
+
+    if not allowed:
         await message.answer(
-            "📸 Учитель просит вас обновить фотографию профиля!\n\n"
-            "Пожалуйста, отправьте новое фото вашего лица (аватарку). "
-            "После этого вы сможете снова отправлять домашние задания.",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="📷 Отправить новое фото")]],
-                resize_keyboard=True,
-                one_time_keyboard=True
-            )
+            "ℹ️ Сейчас нет доступных дат для сдачи домашнего задания.\n"
+            "Даты открывает учитель в календаре на сайте.",
+            reply_markup=get_main_menu()
         )
-        await state.set_state(AvatarUpdate.photo)
         return
-    
-    # Если мы уже в процессе отправки домашки (ждём дату) — игнорируем новое фото
-    current_state = await state.get_state()
-    if current_state == HomeworkSubmission.due_date:
-        await message.answer("⏳ Сначала укажите дату для предыдущего фото, или нажмите /cancel")
-        return
-    
-    # Скачиваем фото домашки
-    photo = message.photo[-1]
-    file = await bot.get_file(photo.file_id)
-    file_bytes = await bot.download_file(file.file_path)
-    
-    # Сохраняем фото и student_id во временные данные
-    await state.update_data(
-        student_id=student["id"],
-        photo_bytes=file_bytes.read(),
-        file_id=photo.file_id
-    )
-    
-    # Предлагаем быстрые варианты дат
-    from datetime import datetime, timedelta
-    today = datetime.now()
-    dates = [
-        today.strftime("%d.%m.%Y"),
-        (today + timedelta(days=1)).strftime("%d.%m.%Y"),
-        (today - timedelta(days=1)).strftime("%d.%m.%Y"),
-    ]
-    buttons = [[KeyboardButton(text=d)] for d in dates]
-    buttons.append([KeyboardButton(text="📝 Ввести вручную")])
-    keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=True)
-    
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📅 {_fmt_date(d)}", callback_data=f"cal:{d}")]
+        for d in allowed
+    ])
     await message.answer(
-        "📅 На какую дату задано это домашнее задание?\n\n"
-        "Выберите дату или введите вручную в формате ДД.ММ.ГГГГ (например: 15.09.2026):",
+        "📅 Выберите дату сдачи домашнего задания:",
         reply_markup=keyboard
     )
-    await state.set_state(HomeworkSubmission.due_date)
 
 
-async def process_avatar_update(message: Message, state: FSMContext, bot: Bot, student: dict):
-    """Обработка новой аватарки."""
-    photo = message.photo[-1]
-    file = await bot.get_file(photo.file_id)
-    file_bytes = await bot.download_file(file.file_path)
-    
-    # Генерируем имя файла
-    import uuid
-    filename = f"{message.from_user.id}_{uuid.uuid4().hex[:8]}.jpg"
-    
-    # Загружаем в Storage
-    try:
-        from services.supabase_client import upload_avatar
-        avatar_url = await upload_avatar(file_bytes.read(), filename)
-    except Exception as e:
-        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте ещё раз.")
+@router.callback_query(F.data.startswith("cal:"))
+async def choose_date(callback: CallbackQuery, state: FSMContext):
+    """Ученик выбрал дату — ждём фото."""
+    await callback.answer()
+
+    student = await get_student(callback.from_user.id)
+    if not student:
+        await callback.message.answer("❌ Сначала зарегистрируйтесь: /start")
         return
-    
-    # Обновляем в БД
-    try:
-        await update_avatar(message.from_user.id, avatar_url)
-    except Exception as e:
-        await message.answer(f"❌ Ошибка сохранения: {e}")
-        return
-    
-    await state.clear()
-    await message.answer(
-        "✅ Фотография профиля обновлена!\n\n"
-        "Теперь вы можете снова отправлять домашние задания.",
-        reply_markup=get_main_menu()
+
+    due_date = callback.data.split(":", 1)[1]
+
+    await state.set_state(HomeworkStates.waiting_photo)
+    await state.update_data(due_date=due_date, photos_count=0)
+
+    await callback.message.answer(
+        f"📅 Выбрана дата: <b>{_fmt_date(due_date)}</b>\n\n"
+        "Теперь прикрепите фото домашнего задания.",
+        parse_mode="HTML"
     )
 
 
-@router.message(HomeworkSubmission.due_date, F.text == "📝 Ввести вручную")
-async def ask_manual_date(message: Message, state: FSMContext):
-    await message.answer("Введите дату в формате ДД.ММ.ГГГГ:", reply_markup=get_main_menu())
-
-
-@router.message(HomeworkSubmission.due_date)
-async def process_due_date(message: Message, state: FSMContext):
-    """Сохранение фото с указанной датой."""
-    from datetime import datetime
-    import uuid
-    
-    date_text = message.text.strip()
-    
-    # Парсим дату
-    due_date = None
-    for fmt in ("%d.%m.%Y", "%d.%m.%y"):
-        try:
-            due_date = datetime.strptime(date_text, fmt).date()
-            break
-        except ValueError:
-            continue
-    
-    if not due_date:
-        await message.answer(
-            "❌ Неверный формат даты. Введите в формате ДД.ММ.ГГГГ (например: 15.09.2026):"
-        )
-        return
-    
+@router.message(HomeworkStates.waiting_photo, F.photo)
+async def process_photo(message: Message, state: FSMContext, bot: Bot):
+    """Сохраняем фото работы с выбранной датой."""
     data = await state.get_data()
-    student_id = data["student_id"]
-    file_bytes = data["photo_bytes"]
-    
-    # Генерируем имя файла
-    filename = f"{student_id}_{due_date.strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}.jpg"
-    
-    # Загружаем в Storage
-    try:
-        photo_url = await upload_homework_photo(file_bytes, filename)
-    except Exception as e:
-        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте ещё раз.")
+    due_date = data.get("due_date")
+    student = await get_student(message.from_user.id)
+
+    if not student or not due_date:
         await state.clear()
+        await message.answer("❌ Сессия сдачи истекла. Начните заново: «📸 Отправить домашнее задание».")
         return
-    
-    # Сохраняем в БД
-    submission_data = {
-        "student_id": student_id,
-        "photo_url": photo_url,
-        "due_date": due_date.isoformat(),
-        "status": "pending"
-    }
-    
+
+    # Скачиваем и загружаем фото
+    photo = message.photo[-1]
     try:
-        await create_submission(submission_data)
+        file = await bot.get_file(photo.file_id)
+        file_bytes = await bot.download_file(file.file_path)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте отправить ещё раз.")
+        return
+
+    filename = f"{student['id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
+
+    try:
+        photo_url = await upload_homework_photo(file_bytes.read(), filename)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте отправить ещё раз.")
+        return
+
+    # Сохраняем работу: due_date — дата из календаря,
+    # submitted_at проставится автоматически (время загрузки)
+    try:
+        await create_submission({
+            "student_id": student["id"],
+            "photo_url": photo_url,
+            "status": "pending",
+            "due_date": due_date,
+        })
     except Exception as e:
         await message.answer(f"❌ Ошибка сохранения: {e}")
-        await state.clear()
         return
-    
-    await state.clear()
+
+    count = int(data.get("photos_count", 0)) + 1
+    await state.update_data(photos_count=count)
+
     await message.answer(
-        f"✅ Домашнее задание получено!\n\n"
-        f"📅 Дата: {due_date.strftime('%d.%m.%Y')}\n"
-        f"📸 Фото сохранено.\n\n"
-        f"Если нужно отправить ещё фото на ту же дату — просто пришлите следующее.",
+        f"📎 Фото {count} сохранено на дату {_fmt_date(due_date)}.\n"
+        "Можно прикрепить ещё фото или завершить.",
+        reply_markup=_homework_keyboard()
+    )
+
+
+@router.callback_query(F.data == "hw:add")
+async def add_more_photo(callback: CallbackQuery, state: FSMContext):
+    """Кнопка «Добавить ещё фото»."""
+    await callback.answer()
+    current = await state.get_state()
+    if current != HomeworkStates.waiting_photo:
+        await callback.message.answer("Начните сдачу заново: «📸 Отправить домашнее задание».")
+        return
+    await callback.message.answer("📎 Прикрепите следующее фото.")
+
+
+@router.callback_query(F.data == "hw:finish")
+async def finish_homework(callback: CallbackQuery, state: FSMContext):
+    """Кнопка «Завершить» — работа принята, возврат в главное меню."""
+    await callback.answer()
+    data = await state.get_data()
+    count = int(data.get("photos_count", 0))
+    await state.clear()
+
+    await callback.message.answer(
+        f"✅ Работа принята! Всего фото: {count}.\n"
+        "Учитель скоро проверит вашу работу.",
         reply_markup=get_main_menu()
     )
 
 
-@router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Отменено.", reply_markup=get_main_menu())
+@router.message(F.photo)
+async def stray_photo(message: Message, state: FSMContext):
+    """Фото вне процесса сдачи."""
+    if await state.get_state() is not None:
+        return  # сообщение обработается другим обработчиком
+    student = await get_student(message.from_user.id)
+    if student:
+        await message.answer(
+            "Чтобы сдать работу, нажмите «📸 Отправить домашнее задание» "
+            "и выберите дату сдачи."
+        )
+    else:
+        await message.answer("❌ Вы ещё не зарегистрированы. Нажмите /start.")
