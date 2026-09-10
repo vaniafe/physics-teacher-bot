@@ -6,7 +6,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 async def student_exists(telegram_id: int) -> bool:
-    """Проверяет, зарегистрирован ли уже ученик."""
+    """Проверяет, привязан ли этот Telegram-аккаунт к ученику."""
     result = await asyncio.to_thread(
         lambda: supabase.table("students").select("id").eq("telegram_id", telegram_id).execute()
     )
@@ -25,6 +25,42 @@ async def get_student(telegram_id: int) -> dict:
     """Получает данные ученика по telegram_id."""
     result = await asyncio.to_thread(
         lambda: supabase.table("students").select("*").eq("telegram_id", telegram_id).execute()
+    )
+    return result.data[0] if result.data else None
+
+
+async def get_student_by_login(login: str) -> dict:
+    """Получает ученика по логину (для входа «я уже зарегистрирован»)."""
+    result = await asyncio.to_thread(
+        lambda: supabase.table("students").select("*").eq("login", login).execute()
+    )
+    return result.data[0] if result.data else None
+
+
+async def find_student_by_name(first_name: str, last_name: str) -> dict:
+    """Ищет ученика по имени и фамилии БЕЗ учёта регистра."""
+    result = await asyncio.to_thread(
+        lambda: supabase.table("students").select("id")
+        .ilike("first_name", first_name)
+        .ilike("last_name", last_name)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+async def login_taken(login: str, exclude_id=None) -> bool:
+    """Проверяет, занят ли логин другим учеником."""
+    query = supabase.table("students").select("id").eq("login", login)
+    if exclude_id:
+        query = query.neq("id", exclude_id)
+    result = await asyncio.to_thread(lambda: query.execute())
+    return len(result.data) > 0
+
+
+async def update_student(student_id, data: dict) -> dict:
+    """Обновляет поля ученика."""
+    result = await asyncio.to_thread(
+        lambda: supabase.table("students").update(data).eq("id", student_id).execute()
     )
     return result.data[0] if result.data else None
 
@@ -50,34 +86,19 @@ async def upload_homework_photo(file_bytes: bytes, filename: str) -> str:
 
 
 async def create_submission(data: dict) -> dict:
-    """Создаёт запись о сданной работе."""
+    """Создаёт запись о сданной работе (due_date — дата из календаря,
+    submitted_at проставится автоматически)."""
     result = await asyncio.to_thread(
         lambda: supabase.table("submissions").insert(data).execute()
     )
     return result.data[0] if result.data else None
 
-async def check_avatar_update_needed(telegram_id: int) -> bool:
-    """Проверяет, нужно ли ученику обновить аватарку."""
+
+async def get_calendar_dates(school: str, class_number: str) -> list:
+    """Отмеченные учителем даты сдачи для класса (календарь на сайте)."""
     result = await asyncio.to_thread(
-        lambda: supabase.table("students").select("needs_avatar_update").eq("telegram_id", telegram_id).execute()
+        lambda: supabase.table("class_calendar").select("date")
+        .eq("school", school).eq("class_number", class_number)
+        .order("date").execute()
     )
-    if result.data and len(result.data) > 0:
-        return result.data[0].get("needs_avatar_update", False)
-    return False
-
-async def update_avatar(telegram_id: int, avatar_url: str) -> None:
-    """Обновляет аватарку и сбрасывает флаг."""
-    await asyncio.to_thread(
-        lambda: supabase.table("students").update({
-            "avatar_url": avatar_url,
-            "needs_avatar_update": False
-        }).eq("telegram_id", telegram_id).execute()
-    )
-
-
-async def get_homeworks() -> list:
-    """Получает список всех заданий."""
-    result = await asyncio.to_thread(
-        lambda: supabase.table("homeworks").select("*").order("due_date", desc=True).execute()
-    )
-    return result.data
+    return [r["date"] for r in result.data]
