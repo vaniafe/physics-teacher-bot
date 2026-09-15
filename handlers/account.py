@@ -59,10 +59,9 @@ async def start_change(callback: CallbackQuery, state: FSMContext):
 
     await state.set_state(ProfileStates.waiting_new_login)
     await callback.message.answer(
-        "Введите *новый логин* (латинские буквы, цифры и подчёркивание, от 3 символов).\n\n"
+        "Введите <b>новый логин</b> (латинские буквы, цифры и подчёркивание, от 3 символов).\n\n"
         f"Текущий логин: <code>{student.get('login') or '—'}</code>\n"
         "Можно ввести его же, если хотите оставить логин без изменений.",
-        parse_mode="Markdown",
         reply_markup=get_back_keyboard()
     )
 
@@ -96,8 +95,7 @@ async def process_new_login(message: Message, state: FSMContext):
         await state.update_data(new_login=login_l)
         await state.set_state(ProfileStates.waiting_new_password)
         await message.answer(
-            f"Логин: <code>{login_l}</code>\n\nТеперь введите *новый пароль* (от 4 символов):",
-            parse_mode="Markdown"
+            f"Логин: <code>{login_l}</code>\n\nТеперь введите <b>новый пароль</b> (от 4 символов):"
         )
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
