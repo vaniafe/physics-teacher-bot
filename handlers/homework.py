@@ -193,10 +193,18 @@ async def process_photo(message: Message, state: FSMContext, bot: Bot):
 
     filename = f"{student['id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
 
-    try:
-        photo_url = await upload_homework_photo(file_bytes.read(), filename)
-    except Exception as e:
-        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте отправить ещё раз.")
+    # Автоповтор при временных сбоях сети (например, ошибка 520)
+    photo_url = None
+    last_err = None
+    for _attempt in range(3):
+        try:
+            photo_url = await upload_homework_photo(file_bytes.read(), filename)
+            break
+        except Exception as e:
+            last_err = e
+            await asyncio.sleep(1.5)
+    if not photo_url:
+        await message.answer(f"❌ Ошибка загрузки фото: {last_err}\nПопробуйте отправить ещё раз.")
         return
 
     # Сохраняем работу: due_date — дата из календаря,
