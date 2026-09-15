@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -8,7 +8,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from services.supabase_client import (
     get_student, upload_homework_photo, create_submission, get_calendar_dates,
-    upload_avatar, delete_avatar, update_student
+    upload_avatar, delete_avatar, update_student, count_session_photos
 )
 from keyboards.main_menu import get_main_menu
 
@@ -96,7 +96,6 @@ async def process_avatar_update(message: Message, state: FSMContext, bot: Bot):
         await message.answer("❌ Сначала зарегистрируйтесь: /start")
         return
 
-    # Скачиваем новое фото
     photo = message.photo[-1]
     try:
         file = await bot.get_file(photo.file_id)
@@ -113,7 +112,6 @@ async def process_avatar_update(message: Message, state: FSMContext, bot: Bot):
         await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте отправить ещё раз.")
         return
 
-    # Удаляем старое фото из Storage (если оно есть)
     old_url = student.get("avatar_url")
     if old_url:
         try:
@@ -121,7 +119,6 @@ async def process_avatar_update(message: Message, state: FSMContext, bot: Bot):
         except Exception:
             pass  # не критично
 
-    # Сохраняем новое фото и снимаем галочку
     try:
         await update_student(student["id"], {
             "avatar_url": avatar_url,
@@ -160,11 +157,15 @@ async def choose_date(callback: CallbackQuery, state: FSMContext):
     due_date = callback.data.split(":", 1)[1]
 
     await state.set_state(HomeworkStates.waiting_photo)
-    await state.update_data(due_date=due_date, photos_count=0)
+    await state.update_data(
+        due_date=due_date,
+        photos_count=0,
+        session_start=datetime.now(timezone.utc).isoformat(),
+    )
 
     await callback.message.answer(
         f"📅 Выбрана дата: <b>{_fmt_date(due_date)}</b>\n\n"
-        "Теперь прикрепите фото домашнего задания.",
+        "Теперь прикрепите фото домашнего задания (можно несколько сразу).",
         parse_mode="HTML"
     )
 
@@ -174,6 +175,7 @@ async def process_photo(message: Message, state: FSMContext, bot: Bot):
     """Сохраняем фото работы с выбранной датой."""
     data = await state.get_data()
     due_date = data.get("due_date")
+    session_start = data.get("session_start")
     student = await get_student(message.from_user.id)
 
     if not student or not due_date:
@@ -181,7 +183,6 @@ async def process_photo(message: Message, state: FSMContext, bot: Bot):
         await message.answer("❌ Сессия сдачи истекла. Начните заново: «📸 Отправить домашнее задание».")
         return
 
-    # Скачиваем и загружаем фото
     photo = message.photo[-1]
     try:
         file = await bot.get_file(photo.file_id)
@@ -211,7 +212,8 @@ async def process_photo(message: Message, state: FSMContext, bot: Bot):
         await message.answer(f"❌ Ошибка сохранения: {e}")
         return
 
-    count = int(data.get("photos_count", 0)) + 1
+    # Считаем фото текущей сессии по базе (корректно и при альбомах)
+    count = await count_session_photos(student["id"], due_date, session_start)
     await state.update_data(photos_count=count)
 
     await message.answer(
