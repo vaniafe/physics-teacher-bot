@@ -7,7 +7,8 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 
 from config import BOT_TOKEN, PROXY_URL
-from handlers import start, registration, account, homework
+from handlers import start, registration, account, homework, chat
+from services.dispatcher import dispatch_loop
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -23,15 +24,19 @@ async def main():
         logging.info(f"Используется прокси: {PROXY_URL}")
     else:
         bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    
+
     dp = Dispatcher()
-    
-    # Подключаем роутеры (порядок важен!)
+
+    # Подключаем роутеры (порядок важен: сценарии выше, ловец текста — последним)
     dp.include_router(start.router)
     dp.include_router(registration.router)
     dp.include_router(account.router)
     dp.include_router(homework.router)
-    
+    dp.include_router(chat.router)
+
+    # Фоновая доставка сообщений сайта -> Telegram (раз в 15 сек)
+    asyncio.create_task(dispatch_loop(bot))
+
     # Удаляем вебхук и запускаем polling
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
