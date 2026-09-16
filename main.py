@@ -27,12 +27,12 @@ async def main():
 
     dp = Dispatcher()
 
-    # Подключаем роутеры (порядок важен: сценарии выше, ловец текста — последним)
+    # Подключаем роутеры (ПОРЯДОК ВАЖЕН: сценарии и кнопки выше, ловец текста — последним!)
     dp.include_router(start.router)
     dp.include_router(registration.router)
     dp.include_router(account.router)
-    dp.include_router(homework.router)
-    dp.include_router(chat.router)
+    dp.include_router(homework.router)   # <-- кнопка «Отправить домашнее задание» здесь
+    dp.include_router(chat.router)       # <-- ловец текста ВСЕГДА последний
 
     # Фоновая доставка сообщений сайта -> Telegram (раз в 15 сек)
     asyncio.create_task(dispatch_loop(bot))
