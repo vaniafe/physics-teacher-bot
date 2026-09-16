@@ -1,7 +1,6 @@
 import asyncio
-import re
 import uuid
-import random
+from datetime import datetime, date, timedelta, timezone
 
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -9,243 +8,338 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from services.supabase_client import (
-    student_exists, create_student, upload_avatar, find_student_by_name, login_taken
+    get_student, upload_homework_photo, create_submission, get_calendar_dates,
+    upload_avatar, delete_avatar, update_student, count_session_photos
 )
-from keyboards.main_menu import get_entry_keyboard, get_main_menu
+from keyboards.main_menu import get_main_menu
 
 router = Router()
 
-# Школы и классы
-SCHOOLS = ["СОШ №1 г. Голицыно", "Маловяземская СОШ"]
-SCHOOL_CLASSES = {
-    "СОШ №1 г. Голицыно": ["10", "11"],
-    "Маловяземская СОШ": ["9А", "9Б", "9В", "10", "11"],
-}
+
+class HomeworkStates(StatesGroup):
+    waiting_photo = State()      # ученик прикрепляет фото работы к выбранной дате
+    waiting_avatar = State()     # ученик должен обновить фото профиля
 
 
-class Registration(StatesGroup):
-    school = State()        # выбор школы и класса (кнопками)
-    first_name = State()
-    last_name = State()
-    avatar = State()
+def _fmt_date(iso_date: str) -> str:
+    """'2026-09-15' -> '15.09.2026'"""
+    try:
+        return datetime.strptime(iso_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+    except ValueError:
+        return iso_date
 
 
-# Транслитерация русских букв в латиницу
-TRANSLIT = {
-    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
-    'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
-    'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
-    'ф': 'f', 'х': 'h', 'ц': 'c', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
-    'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
-}
-
-
-def translit(text: str) -> str:
-    return ''.join(TRANSLIT.get(ch, ch) for ch in text.lower())
-
-
-async def generate_login(first_name: str, last_name: str) -> str:
-    """Логин = фамилия латиницей + '_' + первая буква имени. Пример: ivanov_i"""
-    base = translit(last_name)
-    base = re.sub(r'[^a-z0-9]', '', base)
-    letter = translit(first_name)[:1]
-    login = f"{base}_{letter}"
-
-    candidate = login
-    n = 2
-    while await login_taken(candidate):
-        candidate = f"{login}{n}"
-        n += 1
-    return candidate
-
-
-def generate_password() -> str:
-    """Простой 6-значный пароль."""
-    return str(random.randint(100000, 999999))
-
-
-def _school_keyboard() -> InlineKeyboardMarkup:
-    """Кнопки выбора школы."""
+def _homework_keyboard() -> InlineKeyboardMarkup:
+    """Кнопки после загрузки фото."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=school, callback_data=f"regschool:{i}")]
-        for i, school in enumerate(SCHOOLS)
+        [InlineKeyboardButton(text="➕ Добавить ещё фото", callback_data="hw:add")],
+        [InlineKeyboardButton(text="✅ Завершить", callback_data="hw:finish")],
     ])
 
 
-def _class_keyboard(school: str) -> InlineKeyboardMarkup:
-    """Кнопки выбора класса для выбранной школы."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{cls} класс", callback_data=f"regcls:{cls}")]
-        for cls in SCHOOL_CLASSES.get(school, [])
-    ])
+@router.message(F.text == "📸 Отправить домашнее задание")
+async def start_homework(message: Message, state: FSMContext):
+    """Начало сдачи работы. Если нужно обновить фото профиля — сначала оно."""
 
-
-@router.message(F.text == "📝 Зарегистрироваться")
-async def btn_register(message: Message, state: FSMContext):
-    """Начало регистрации: выбор школы."""
-    await state.clear()
-
-    if await student_exists(message.from_user.id):
-        await message.answer("Вы уже зарегистрированы.", reply_markup=get_main_menu())
-        return
-
-    await state.set_state(Registration.school)
-    await message.answer(
-        "Давайте зарегистрируем вас.\n\n"
-        "Шаг 1/4: Выберите вашу *школу*:",
-        parse_mode="Markdown",
-        reply_markup=_school_keyboard()
-    )
-
-
-@router.callback_query(F.data.startswith("regschool:"))
-async def process_school_choice(callback: CallbackQuery, state: FSMContext):
-    """Ученик выбрал школу — предлагаем классы этой школы."""
-    await callback.answer()
-
-    current = await state.get_state()
-    if current != Registration.school.state:
-        return  # старые кнопки игнорируем
-
-    school = SCHOOLS[int(callback.data.split(":")[1])]
-    await state.update_data(school=school)
-
-    await callback.message.answer(
-        f"🏫 {school}\n\n"
-        "Шаг 2/4: Выберите ваш *класс*:",
-        parse_mode="Markdown",
-        reply_markup=_class_keyboard(school)
-    )
-
-
-@router.callback_query(F.data.startswith("regcls:"))
-async def process_class_choice(callback: CallbackQuery, state: FSMContext):
-    """Ученик выбрал класс — просим имя."""
-    await callback.answer()
-
-    current = await state.get_state()
-    if current != Registration.school.state:
-        return  # старые кнопки игнорируем
-
-    class_number = callback.data.split(":", 1)[1]
-    await state.update_data(class_number=class_number)
-    await state.set_state(Registration.first_name)
-
-    await callback.message.answer(
-        f"📚 {class_number} класс\n\n"
-        "Шаг 3/4: Напишите ваше *имя* (только имя, без фамилии):",
-        parse_mode="Markdown"
-    )
-
-
-@router.message(Registration.first_name)
-async def process_first_name(message: Message, state: FSMContext):
-    if not message.text or len(message.text) < 2 or len(message.text) > 50:
-        await message.answer("❌ Имя должно быть от 2 до 50 символов. Попробуйте ещё раз:")
-        return
-    await state.update_data(first_name=message.text.strip())
-    await message.answer("Шаг 4/4: Напишите вашу *фамилию*:", parse_mode="Markdown")
-    await state.set_state(Registration.last_name)
-
-
-@router.message(Registration.last_name)
-async def process_last_name(message: Message, state: FSMContext):
-    if not message.text or len(message.text) < 2 or len(message.text) > 50:
-        await message.answer("❌ Фамилия должна быть от 2 до 50 символов. Попробуйте ещё раз:")
-        return
-
-    last_name = message.text.strip()
-    data = await state.get_data()
-
-    # Проверка на дубликат имени и фамилии (без учёта регистра)
-    existing = await find_student_by_name(data["first_name"], last_name)
-    if existing:
-        await state.clear()
+    # Проверяем, зарегистрирован ли ученик
+    student = await get_student(message.from_user.id)
+    if not student:
         await message.answer(
-            "❌ Пользователь с таким именем уже зарегистрирован.\n\n"
-            "Если это вы — нажмите «✅ Я уже зарегистрирован» "
-            "и войдите по логину и паролю.",
-            reply_markup=get_entry_keyboard()
+            "❌ Вы ещё не зарегистрированы!\n\n"
+            "Нажмите /start, чтобы пройти регистрацию."
         )
         return
 
-    await state.update_data(last_name=last_name)
-    await message.answer(
-        "Отлично! Последний шаг: отправьте *фотографию вашего лица* (аватарку), "
-        "чтобы учитель мог вас узнать.\n\n"
-        "📎 Прикрепите фото прямо в чат (только одно фото).",
-        parse_mode="Markdown"
-    )
-    await state.set_state(Registration.avatar)
-
-
-_reg_locks: dict = {}
-
-
-@router.message(Registration.avatar, F.photo)
-async def process_avatar(message: Message, state: FSMContext, bot: Bot):
-    """Фото профиля. Если прислали несколько фото пакетом —
-    используем только ПЕРВОЕ, остальные игнорируем."""
-    lock = _reg_locks.setdefault(message.from_user.id, asyncio.Lock())
-    async with lock:
-        await _process_avatar_locked(message, state, bot)
-
-
-async def _process_avatar_locked(message: Message, state: FSMContext, bot: Bot):
-    data = await state.get_data()
-
-    # Регистрация уже завершена по первому фото пакета — остальные пропускаем
-    if not data.get("last_name"):
+    # У учителя включён запрос на смену фото профиля
+    if student.get("needs_avatar_update"):
+        await state.set_state(HomeworkStates.waiting_avatar)
+        await message.answer(
+            "📸 Необходимо обновить фото профиля!\n\n"
+            "Прикрепите новую фотографию вашего лица.\n"
+            "После этого вы сможете отправлять домашние задания."
+        )
         return
 
-    # Генерируем логин и пароль для сайта
-    login = await generate_login(data["first_name"], data["last_name"])
-    password = generate_password()
+    # Даты из календаря, открытые учителем для этого класса
+    dates = await get_calendar_dates(student["school"], student["class_number"])
 
-    # Скачиваем фото (берём самое большое разрешение)
+    # Только диапазон: вчера — сегодня+5 дней
+    today = date.today()
+    lo = (today - timedelta(days=1)).isoformat()
+    hi = (today + timedelta(days=5)).isoformat()
+    allowed = [d for d in dates if lo <= d <= hi]
+
+    if not allowed:
+        await message.answer(
+            "ℹ️ Сейчас нет доступных дат для сдачи домашнего задания.\n"
+            "Даты открывает учитель в календаре на сайте.",
+            reply_markup=get_main_menu()
+        )
+        return
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📅 {_fmt_date(d)}", callback_data=f"cal:{d}")]
+        for d in allowed
+    ])
+    await message.answer(
+        "📅 Выберите дату сдачи домашнего задания:",
+        reply_markup=keyboard
+    )
+
+
+@router.message(HomeworkStates.waiting_avatar, F.photo)
+async def process_avatar_update(message: Message, state: FSMContext, bot: Bot):
+    """Обновление фото профиля: удаляем старое фото, сохраняем новое,
+    снимаем галочку needs_avatar_update."""
+    student = await get_student(message.from_user.id)
+    if not student:
+        await state.clear()
+        await message.answer("❌ Сначала зарегистрируйтесь: /start")
+        return
+
     photo = message.photo[-1]
-    file = await bot.get_file(photo.file_id)
-    file_bytes = await bot.download_file(file.file_path)
+    try:
+        file = await bot.get_file(photo.file_id)
+        file_bytes = await bot.download_file(file.file_path)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте отправить ещё раз.")
+        return
 
     filename = f"{message.from_user.id}_{uuid.uuid4().hex[:8]}.jpg"
 
     try:
         avatar_url = await upload_avatar(file_bytes.read(), filename)
     except Exception as e:
-        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте отправить другое фото.")
+        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте отправить ещё раз.")
         return
 
-    student_data = {
-        "telegram_id": message.from_user.id,
-        "first_name": data["first_name"],
-        "last_name": data["last_name"],
-        "class_number": data["class_number"],
-        "school": data["school"],
-        "avatar_url": avatar_url,
-        "tg_username": message.from_user.username,
-        "login": login,
-        "password": password,
-    }
+    old_url = student.get("avatar_url")
+    if old_url:
+        try:
+            await delete_avatar(old_url)
+        except Exception:
+            pass  # не критично
 
     try:
-        await create_student(student_data)
+        await update_student(student["id"], {
+            "avatar_url": avatar_url,
+            "needs_avatar_update": False,
+        })
     except Exception as e:
-        await message.answer(f"❌ Ошибка сохранения в базу данных: {e}")
+        await message.answer(f"❌ Ошибка сохранения: {e}")
         return
 
     await state.clear()
     await message.answer(
-        f"✅ Регистрация завершена!\n\n"
-        f"👤 {data['first_name']} {data['last_name']}\n"
-        f"🏫 {data['school']}, {data['class_number']}\n\n"
-        f"🔑 Ваши данные для входа на сайт physfun.ru:\n"
-        f"Логин: <code>{login}</code>\n"
-        f"Пароль: <code>{password}</code>\n\n"
-        f"Сохраните их! Посмотреть снова можно в разделе «🔑 Мой логин для сайта».",
+        "✅ Фото профиля обновлено!\n\n"
+        "Теперь вы можете отправлять домашние задания.",
         reply_markup=get_main_menu()
     )
 
 
-@router.message(Registration.avatar)
-async def process_avatar_invalid(message: Message):
-    await message.answer("❌ Пожалуйста, отправьте именно *фотографию*, а не текст или файл.", parse_mode="Markdown")
+@router.message(HomeworkStates.waiting_avatar)
+async def process_avatar_update_invalid(message: Message):
+    await message.answer(
+        "❌ Пожалуйста, отправьте именно *фотографию* (не текст или файл).",
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data.startswith("cal:"))
+async def choose_date(callback: CallbackQuery, state: FSMContext):
+    """Ученик выбрал дату — ждём фото."""
+    await callback.answer()
+
+    student = await get_student(callback.from_user.id)
+    if not student:
+        await callback.message.answer("❌ Сначала зарегистрируйтесь: /start")
+        return
+
+    due_date = callback.data.split(":", 1)[1]
+
+    await state.set_state(HomeworkStates.waiting_photo)
+    await state.update_data(
+        due_date=due_date,
+        photos_count=0,
+        keyboard_sent=False,
+        session_start=datetime.now(timezone.utc).isoformat(),
+    )
+
+    await callback.message.answer(
+        f"📅 Выбрана дата: <b>{_fmt_date(due_date)}</b>\n\n"
+        "Теперь прикрепите фото домашнего задания (можно несколько сразу).",
+        parse_mode="HTML"
+    )
+
+
+_photo_locks: dict = {}
+_pending_kb: dict = {}
+
+
+async def _send_hw_keyboard(bot: Bot, user_id: int, chat_id: int,
+                            student_id, due_date: str, session_start: str,
+                            state: FSMContext):
+    """Показать кнопки «Добавить/Завершить» ОДИН РАЗ за сессию сдачи —
+    после того, как обработан весь пакет фото (альбом приходит
+    несколькими сообщениями; каждое новое фото отменяет таймер
+    предыдущего, сработает только последний)."""
+    try:
+        await asyncio.sleep(2.5)
+        count = await count_session_photos(student_id, due_date, session_start)
+        await bot.send_message(
+            chat_id,
+            f"📎 Фото {count} сохранено на дату {_fmt_date(due_date)}.\n"
+            "Можно прикрепить ещё фото или завершить.",
+            reply_markup=_homework_keyboard(),
+        )
+        await state.update_data(keyboard_sent=True)
+    except asyncio.CancelledError:
+        pass  # пришло ещё фото из пакета — покажет следующий таймер
+    finally:
+        _pending_kb.pop(user_id, None)
+
+
+@router.message(HomeworkStates.waiting_photo, F.photo)
+async def process_photo(message: Message, state: FSMContext, bot: Bot):
+    """Сохраняем фото работы с выбранной датой.
+
+    Альбом из нескольких фото приходит пачкой сообщений — обрабатываем
+    их строго по очереди (блокировка), чтобы счётчик не сбивался.
+    """
+    lock = _photo_locks.setdefault(message.from_user.id, asyncio.Lock())
+    async with lock:
+        await _process_photo_locked(message, state, bot)
+
+
+async def _process_photo_locked(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    due_date = data.get("due_date")
+    session_start = data.get("session_start")
+    student = await get_student(message.from_user.id)
+
+    if not student or not due_date:
+        await state.clear()
+        await message.answer("❌ Сессия сдачи истекла. Начните заново: «📸 Отправить домашнее задание».")
+        return
+
+    photo = message.photo[-1]
+    try:
+        file = await bot.get_file(photo.file_id)
+        file_bytes = await bot.download_file(file.file_path)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте отправить ещё раз.")
+        return
+
+    filename = f"{student['id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
+
+    # Автоповтор при временных сбоях сети (например, ошибка 520)
+    photo_url = None
+    last_err = None
+    for _attempt in range(3):
+        try:
+            photo_url = await upload_homework_photo(file_bytes.read(), filename)
+            break
+        except Exception as e:
+            last_err = e
+            await asyncio.sleep(1.5)
+    if not photo_url:
+        await message.answer(f"❌ Ошибка загрузки фото: {last_err}\nПопробуйте отправить ещё раз.")
+        return
+
+    # Сохраняем работу: due_date — дата из календаря,
+    # submitted_at проставится автоматически (время загрузки)
+    try:
+        await create_submission({
+            "student_id": student["id"],
+            "photo_url": photo_url,
+            "status": "pending",
+            "due_date": due_date,
+        })
+    except Exception as e:
+        await message.answer(f"❌ Ошибка сохранения: {e}")
+        return
+
+    # Считаем фото текущей сессии по базе (корректно и при альбомах)
+    count = await count_session_photos(student["id"], due_date, session_start)
+    await state.update_data(photos_count=count)
+
+    if data.get("keyboard_sent"):
+        # Кнопки уже выданы в этой сессии сдачи — старые остаются рабочими,
+        # новые не дублируем. Сообщаем только счёт.
+        await message.answer(f"📎 Фото {count} сохранено на дату {_fmt_date(due_date)}.")
+        return
+
+    # Кнопки покажем один раз — когда весь пакет фото будет обработан
+    old_task = _pending_kb.pop(message.from_user.id, None)
+    if old_task:
+        old_task.cancel()
+    _pending_kb[message.from_user.id] = asyncio.create_task(
+        _send_hw_keyboard(bot, message.from_user.id, message.chat.id,
+                          student["id"], due_date, session_start, state)
+    )
+
+
+@router.callback_query(F.data == "hw:add")
+async def add_more_photo(callback: CallbackQuery, state: FSMContext):
+    """Кнопка «Добавить ещё фото»."""
+    await callback.answer()
+    current = await state.get_state()
+    if current != HomeworkStates.waiting_photo:
+        await callback.message.answer("Начните сдачу заново: «📸 Отправить домашнее задание».")
+        return
+    await callback.message.answer("📎 Прикрепите следующее фото.")
+
+
+@router.callback_query(F.data == "hw:finish")
+async def finish_homework(callback: CallbackQuery, state: FSMContext):
+    """Кнопка «Завершить» — работа принята, возврат в главное меню.
+
+    Считаем фото напрямую по базе за текущую сессию — точно,
+    даже если ученик прикрепил альбом из нескольких фото.
+    """
+    await callback.answer()
+    data = await state.get_data()
+    due_date = data.get("due_date")
+    session_start = data.get("session_start")
+    student = await get_student(callback.from_user.id)
+
+    old_task = _pending_kb.pop(callback.from_user.id, None)
+    if old_task:
+        old_task.cancel()
+
+    if not due_date or not session_start or not student:
+        await callback.message.answer(
+            "Сессия сдачи уже завершена.\n"
+            "Начните заново: «📸 Отправить домашнее задание»."
+        )
+        return
+
+    count = await count_session_photos(student["id"], due_date, session_start)
+    await state.clear()
+
+    await callback.message.answer(
+        f"✅ Работа принята! Всего фото: {count}.\n"
+        "Учитель скоро проверит вашу работу.",
+        reply_markup=get_main_menu()
+    )
+
+
+@router.message(F.photo)
+async def stray_photo(message: Message, state: FSMContext):
+    """Фото вне процесса сдачи."""
+    if await state.get_state() is not None:
+        return  # сообщение обработается другим обработчиком
+    student = await get_student(message.from_user.id)
+    if student:
+        if student.get("needs_avatar_update"):
+            await message.answer(
+                "📸 Учитель запросил обновление фото профиля.\n"
+                "Нажмите «📸 Отправить домашнее задание» и прикрепите своё фото."
+            )
+        else:
+            await message.answer(
+                "Чтобы сдать работу, нажмите «📸 Отправить домашнее задание» "
+                "и выберите дату сдачи."
+            )
+    else:
+        await message.answer("❌ Вы ещё не зарегистрированы. Нажмите /start.")
