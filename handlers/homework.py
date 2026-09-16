@@ -172,6 +172,27 @@ async def choose_date(callback: CallbackQuery, state: FSMContext):
 
 
 _photo_locks: dict = {}
+_pending_kb: dict = {}
+
+
+async def _send_hw_keyboard(bot: Bot, user_id: int, chat_id: int,
+                            student_id, due_date: str, session_start: str):
+    """Показать кнопки «Добавить/Завершить» один раз — после того,
+    как обработан ВЕСЬ пакет фото (альбом приходит несколькими
+    сообщениями; каждое новое фото отменяет таймер предыдущего)."""
+    try:
+        await asyncio.sleep(2.5)
+        count = await count_session_photos(student_id, due_date, session_start)
+        await bot.send_message(
+            chat_id,
+            f"📎 Фото {count} сохранено на дату {_fmt_date(due_date)}.\n"
+            "Можно прикрепить ещё фото или завершить.",
+            reply_markup=_homework_keyboard(),
+        )
+    except asyncio.CancelledError:
+        pass  # пришло ещё фото из пакета — покажет следующий таймер
+    finally:
+        _pending_kb.pop(user_id, None)
 
 
 @router.message(HomeworkStates.waiting_photo, F.photo)
@@ -238,10 +259,13 @@ async def _process_photo_locked(message: Message, state: FSMContext, bot: Bot):
     count = await count_session_photos(student["id"], due_date, session_start)
     await state.update_data(photos_count=count)
 
-    await message.answer(
-        f"📎 Фото {count} сохранено на дату {_fmt_date(due_date)}.\n"
-        "Можно прикрепить ещё фото или завершить.",
-        reply_markup=_homework_keyboard()
+    # Кнопки покажем один раз — когда весь пакет фото будет обработан
+    old_task = _pending_kb.pop(message.from_user.id, None)
+    if old_task:
+        old_task.cancel()
+    _pending_kb[message.from_user.id] = asyncio.create_task(
+        _send_hw_keyboard(bot, message.from_user.id, message.chat.id,
+                          student["id"], due_date, session_start)
     )
 
 
@@ -268,6 +292,10 @@ async def finish_homework(callback: CallbackQuery, state: FSMContext):
     due_date = data.get("due_date")
     session_start = data.get("session_start")
     student = await get_student(callback.from_user.id)
+
+    old_task = _pending_kb.pop(callback.from_user.id, None)
+    if old_task:
+        old_task.cancel()
 
     if not due_date or not session_start or not student:
         await callback.message.answer(
