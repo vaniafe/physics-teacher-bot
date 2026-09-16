@@ -161,6 +161,7 @@ async def choose_date(callback: CallbackQuery, state: FSMContext):
     await state.update_data(
         due_date=due_date,
         photos_count=0,
+        keyboard_sent=False,
         session_start=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -176,10 +177,12 @@ _pending_kb: dict = {}
 
 
 async def _send_hw_keyboard(bot: Bot, user_id: int, chat_id: int,
-                            student_id, due_date: str, session_start: str):
-    """Показать кнопки «Добавить/Завершить» один раз — после того,
-    как обработан ВЕСЬ пакет фото (альбом приходит несколькими
-    сообщениями; каждое новое фото отменяет таймер предыдущего)."""
+                            student_id, due_date: str, session_start: str,
+                            state: FSMContext):
+    """Показать кнопки «Добавить/Завершить» ОДИН РАЗ за сессию сдачи —
+    после того, как обработан весь пакет фото (альбом приходит
+    несколькими сообщениями; каждое новое фото отменяет таймер
+    предыдущего, сработает только последний)."""
     try:
         await asyncio.sleep(2.5)
         count = await count_session_photos(student_id, due_date, session_start)
@@ -189,6 +192,7 @@ async def _send_hw_keyboard(bot: Bot, user_id: int, chat_id: int,
             "Можно прикрепить ещё фото или завершить.",
             reply_markup=_homework_keyboard(),
         )
+        await state.update_data(keyboard_sent=True)
     except asyncio.CancelledError:
         pass  # пришло ещё фото из пакета — покажет следующий таймер
     finally:
@@ -259,13 +263,19 @@ async def _process_photo_locked(message: Message, state: FSMContext, bot: Bot):
     count = await count_session_photos(student["id"], due_date, session_start)
     await state.update_data(photos_count=count)
 
+    if data.get("keyboard_sent"):
+        # Кнопки уже выданы в этой сессии сдачи — старые остаются рабочими,
+        # новые не дублируем. Сообщаем только счёт.
+        await message.answer(f"📎 Фото {count} сохранено на дату {_fmt_date(due_date)}.")
+        return
+
     # Кнопки покажем один раз — когда весь пакет фото будет обработан
     old_task = _pending_kb.pop(message.from_user.id, None)
     if old_task:
         old_task.cancel()
     _pending_kb[message.from_user.id] = asyncio.create_task(
         _send_hw_keyboard(bot, message.from_user.id, message.chat.id,
-                          student["id"], due_date, session_start)
+                          student["id"], due_date, session_start, state)
     )
 
 
