@@ -5,6 +5,14 @@ from services.supabase_client import get_student, create_message
 
 router = Router()
 
+# Тексты кнопок меню — их ловец пропускает (их обрабатывают свои роутеры)
+MENU_TEXTS = {
+    "📸 Отправить домашнее задание",
+    "🔑 Мой логин для сайта",
+    "ℹ️ Помощь",
+    "⬅️ Назад",
+}
+
 
 @router.message(F.text)
 async def student_to_teacher(message: Message):
@@ -19,8 +27,8 @@ async def student_to_teacher(message: Message):
         return
 
     text = (message.text or "").strip()
-    if not text or text.startswith("/"):
-        return  # команды и пустое — пропускаем
+    if not text or text.startswith("/") or text in MENU_TEXTS:
+        return  # команды, пустое и кнопки меню — пропускаем
 
     await create_message({
         "student_id": student["id"],
