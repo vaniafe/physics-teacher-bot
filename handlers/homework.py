@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import datetime, date, timedelta, timezone
 
@@ -170,9 +171,22 @@ async def choose_date(callback: CallbackQuery, state: FSMContext):
     )
 
 
+_photo_locks: dict = {}
+
+
 @router.message(HomeworkStates.waiting_photo, F.photo)
 async def process_photo(message: Message, state: FSMContext, bot: Bot):
-    """Сохраняем фото работы с выбранной датой."""
+    """Сохраняем фото работы с выбранной датой.
+
+    Альбом из нескольких фото приходит пачкой сообщений — обрабатываем
+    их строго по очереди (блокировка), чтобы счётчик не сбивался.
+    """
+    lock = _photo_locks.setdefault(message.from_user.id, asyncio.Lock())
+    async with lock:
+        await _process_photo_locked(message, state, bot)
+
+
+async def _process_photo_locked(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     due_date = data.get("due_date")
     session_start = data.get("session_start")
@@ -244,10 +258,25 @@ async def add_more_photo(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "hw:finish")
 async def finish_homework(callback: CallbackQuery, state: FSMContext):
-    """Кнопка «Завершить» — работа принята, возврат в главное меню."""
+    """Кнопка «Завершить» — работа принята, возврат в главное меню.
+
+    Считаем фото напрямую по базе за текущую сессию — точно,
+    даже если ученик прикрепил альбом из нескольких фото.
+    """
     await callback.answer()
     data = await state.get_data()
-    count = int(data.get("photos_count", 0))
+    due_date = data.get("due_date")
+    session_start = data.get("session_start")
+    student = await get_student(callback.from_user.id)
+
+    if not due_date or not session_start or not student:
+        await callback.message.answer(
+            "Сессия сдачи уже завершена.\n"
+            "Начните заново: «📸 Отправить домашнее задание»."
+        )
+        return
+
+    count = await count_session_photos(student["id"], due_date, session_start)
     await state.clear()
 
     await callback.message.answer(
