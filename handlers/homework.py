@@ -243,7 +243,8 @@ async def _process_photo_locked(message: Message, state: FSMContext, bot: Bot):
             last_err = e
             await asyncio.sleep(1.5)
     if not photo_url:
-        await message.answer(f"❌ Ошибка загрузки фото: {last_err}\nПопробуйте отправить ещё раз.")
+        err_text = str(last_err) or type(last_err).__name__ or "таймаут сети"
+        await message.answer(f"❌ Ошибка загрузки фото: {err_text}\nПопробуйте отправить ещё раз.")
         return
 
     # Сохраняем работу: due_date — дата из календаря,
