@@ -1,8 +1,17 @@
 import asyncio
 from supabase import create_client, Client
+try:
+    from supabase import ClientOptions
+except ImportError:
+    from supabase.lib.client_options import ClientOptions
 from config import SUPABASE_URL, SUPABASE_KEY
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Таймаут HTTP-запросов к Supabase (сек). По умолчанию всего 5 секунд —
+# этого мало для загрузки фото через посредника api.physfun.ru
+# на медленных мобильных сетях (были таймауты с пустым текстом ошибки).
+supabase: Client = create_client(
+    SUPABASE_URL, SUPABASE_KEY, options=ClientOptions(timeout=60)
+)
 
 
 # ============================================================
