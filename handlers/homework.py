@@ -278,9 +278,20 @@ async def _process_photo_locked(message: Message, state: FSMContext, bot: Bot):
     await state.update_data(photos_count=count)
 
     if data.get("keyboard_sent"):
-        # Кнопки уже выданы в этой сессии сдачи — старые остаются рабочими,
-        # новые не дублируем. Сообщаем только счёт.
-        await message.answer(f"📎 Фото {count} сохранено на дату {_fmt_date(due_date)}.")
+        # Кнопки уже выданы: обновляем ЕДИНСТВЕННОЕ сообщение с ними —
+        # свежий счёт и рабочие кнопки всегда внизу, без спама.
+        kb_mid = data.get("keyboard_msg_id")
+        text = (f"📎 Фото {count} сохранено на дату {_fmt_date(due_date)}.\n"
+                "Можно прикрепить ещё фото или завершить.")
+        if kb_mid:
+            try:
+                await bot.edit_message_text(chat_id=message.chat.id, message_id=kb_mid,
+                                            text=text, reply_markup=_homework_keyboard())
+                return
+            except Exception:
+                pass  # старое сообщение недоступно — отправим новое ниже
+        sent = await message.answer(text, reply_markup=_homework_keyboard())
+        await state.update_data(keyboard_msg_id=sent.message_id)
         return
 
     # Кнопки покажем один раз — когда весь пакет фото будет обработан
@@ -329,7 +340,17 @@ async def finish_homework(callback: CallbackQuery, state: FSMContext):
         return
 
     count = await count_session_photos(student["id"], due_date, session_start)
+    kb_mid = data.get("keyboard_msg_id")
     await state.clear()
+
+    # убираем кнопки из сообщения-клавиатуры, чтобы «Завершить» не жало повторно
+    if kb_mid:
+        try:
+            await callback.bot.edit_message_text(
+                chat_id=callback.message.chat.id, message_id=kb_mid,
+                text="✅ Сдача завершена. Спасибо!")
+        except Exception:
+            pass
 
     await callback.message.answer(
         f"✅ Работа принята! Всего фото: {count}.\n"
