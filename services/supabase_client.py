@@ -1,17 +1,9 @@
 import asyncio
+import httpx
 from supabase import create_client, Client
-try:
-    from supabase import ClientOptions
-except ImportError:
-    from supabase.lib.client_options import ClientOptions
 from config import SUPABASE_URL, SUPABASE_KEY
 
-# Таймаут HTTP-запросов к Supabase (сек). По умолчанию всего 5 секунд —
-# этого мало для загрузки фото через посредника api.physfun.ru
-# на медленных мобильных сетях (были таймауты с пустым текстом ошибки).
-supabase: Client = create_client(
-    SUPABASE_URL, SUPABASE_KEY, options=ClientOptions(timeout=60)
-)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ============================================================
@@ -90,24 +82,38 @@ async def update_student(student_id, data: dict) -> dict:
 #  Файлы (Storage)
 # ============================================================
 
+async def _upload_file(bucket: str, file_bytes: bytes, filename: str) -> str:
+    """Прямая загрузка файла в Storage через HTTP с таймаутом 60 секунд.
+
+    Стандартный клиент supabase-py обрывает загрузку через 5 секунд —
+    этого мало для фото через посредника api.physfun.ru на медленных
+    мобильных сетях. Возвращает публичный URL.
+    """
+    url = f"{SUPABASE_URL}/storage/v1/object/{bucket}/{filename}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "image/jpeg",
+        "x-upsert": "true",
+    }
+
+    def _do():
+        with httpx.Client(timeout=60.0) as client:
+            r = client.post(url, content=file_bytes, headers=headers)
+            r.raise_for_status()
+
+    await asyncio.to_thread(_do)
+    return f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{filename}"
+
+
 async def upload_avatar(file_bytes: bytes, filename: str) -> str:
     """Загружает аватарку в Supabase Storage. Возвращает публичный URL."""
-    await asyncio.to_thread(
-        lambda: supabase.storage.from_("avatars").upload(
-            filename, file_bytes, {"content-type": "image/jpeg", "upsert": "true"}
-        )
-    )
-    return supabase.storage.from_("avatars").get_public_url(filename)
+    return await _upload_file("avatars", file_bytes, filename)
 
 
 async def upload_homework_photo(file_bytes: bytes, filename: str) -> str:
     """Загружает фото домашки в Supabase Storage. Возвращает публичный URL."""
-    await asyncio.to_thread(
-        lambda: supabase.storage.from_("homework-photos").upload(
-            filename, file_bytes, {"content-type": "image/jpeg", "upsert": "true"}
-        )
-    )
-    return supabase.storage.from_("homework-photos").get_public_url(filename)
+    return await _upload_file("homework-photos", file_bytes, filename)
 
 
 def _storage_path(url: str, bucket: str):
