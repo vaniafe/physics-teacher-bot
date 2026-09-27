@@ -223,25 +223,38 @@ async def _process_photo_locked(message: Message, state: FSMContext, bot: Bot):
         return
 
     photo = message.photo[-1]
-    try:
-        file = await bot.get_file(photo.file_id)
-        file_bytes = await bot.download_file(file.file_path)
-    except Exception as e:
-        await message.answer(f"❌ Ошибка загрузки фото: {e}\nПопробуйте отправить ещё раз.")
+
+    # 1) Скачиваем фото из Telegram (с повторами — канал через воркер бывает медленным)
+    file_bytes = None
+    last_dl_err = None
+    for _attempt in range(3):
+        try:
+            file = await bot.get_file(photo.file_id)
+            file_bytes = await bot.download_file(file.file_path)
+            break
+        except Exception as e:
+            last_dl_err = e
+            await asyncio.sleep(2)
+    if not file_bytes:
+        err_text = str(last_dl_err) or type(last_dl_err).__name__ or "таймаут сети"
+        await message.answer(f"❌ Ошибка загрузки фото: {err_text}\nПопробуйте отправить ещё раз.")
         return
 
     filename = f"{student['id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
 
-    # Автоповтор при временных сбоях сети (например, ошибка 520)
+    # 2) Читаем байты ОДИН раз до цикла повторов (иначе повторы отправляют пустое тело!)
+    data = file_bytes.read()
+
+    # 3) Загружаем в Supabase Storage (с повторами при сбоях сети)
     photo_url = None
     last_err = None
-    for _attempt in range(3):
+    for _attempt in range(4):
         try:
-            photo_url = await upload_homework_photo(file_bytes.read(), filename)
+            photo_url = await upload_homework_photo(data, filename)
             break
         except Exception as e:
             last_err = e
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2)
     if not photo_url:
         err_text = str(last_err) or type(last_err).__name__ or "таймаут сети"
         await message.answer(f"❌ Ошибка загрузки фото: {err_text}\nПопробуйте отправить ещё раз.")
