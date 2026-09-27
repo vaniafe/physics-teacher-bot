@@ -219,7 +219,12 @@ async def _process_photo_locked(message: Message, state: FSMContext, bot: Bot):
 
     if not student or not due_date:
         await state.clear()
-        await message.answer("❌ Сессия сдачи истекла. Начните заново: «📸 Отправить домашнее задание».")
+        await message.answer(
+            "❌ Сдача уже завершена или устарела.\n\n"
+            "Если вы отправляли несколько фото пакетом — дождитесь сообщения "
+            "«Можно прикрепить ещё фото или завершить» и только затем нажимайте «Завершить».\n\n"
+            "Повторите отправку: «📸 Отправить домашнее задание»."
+        )
         return
 
     photo = message.photo[-1]
