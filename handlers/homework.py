@@ -243,14 +243,14 @@ async def _process_photo_locked(message: Message, state: FSMContext, bot: Bot):
     filename = f"{student['id']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
 
     # 2) Читаем байты ОДИН раз до цикла повторов (иначе повторы отправляют пустое тело!)
-    data = file_bytes.read()
+    photo_bytes = file_bytes.read()
 
     # 3) Загружаем в Supabase Storage (с повторами при сбоях сети)
     photo_url = None
     last_err = None
     for _attempt in range(4):
         try:
-            photo_url = await upload_homework_photo(data, filename)
+            photo_url = await upload_homework_photo(photo_bytes, filename)
             break
         except Exception as e:
             last_err = e
