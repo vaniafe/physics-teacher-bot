@@ -278,18 +278,16 @@ async def _process_photo_locked(message: Message, state: FSMContext, bot: Bot):
     await state.update_data(photos_count=count)
 
     if data.get("keyboard_sent"):
-        # Кнопки уже выданы: обновляем ЕДИНСТВЕННОЕ сообщение с ними —
-        # свежий счёт и рабочие кнопки всегда внизу, без спама.
+        # Кнопки должны быть ВНИЗУ, под последним фото: удаляем старое
+        # сообщение-клавиатуру и присылаем свежее — оно встанет вниз.
         kb_mid = data.get("keyboard_msg_id")
-        text = (f"📎 Фото {count} сохранено на дату {_fmt_date(due_date)}.\n"
-                "Можно прикрепить ещё фото или завершить.")
         if kb_mid:
             try:
-                await bot.edit_message_text(chat_id=message.chat.id, message_id=kb_mid,
-                                            text=text, reply_markup=_homework_keyboard())
-                return
+                await bot.delete_message(chat_id=message.chat.id, message_id=kb_mid)
             except Exception:
-                pass  # старое сообщение недоступно — отправим новое ниже
+                pass  # уже удалено — не страшно
+        text = (f"📎 Фото {count} сохранено на дату {_fmt_date(due_date)}.\n"
+                "Можно прикрепить ещё фото или завершить.")
         sent = await message.answer(text, reply_markup=_homework_keyboard())
         await state.update_data(keyboard_msg_id=sent.message_id)
         return
@@ -343,12 +341,11 @@ async def finish_homework(callback: CallbackQuery, state: FSMContext):
     kb_mid = data.get("keyboard_msg_id")
     await state.clear()
 
-    # убираем кнопки из сообщения-клавиатуры, чтобы «Завершить» не жало повторно
+    # удаляем сообщение-клавиатуру, чтобы «Завершить» не жали повторно
     if kb_mid:
         try:
-            await callback.bot.edit_message_text(
-                chat_id=callback.message.chat.id, message_id=kb_mid,
-                text="✅ Сдача завершена. Спасибо!")
+            await callback.bot.delete_message(
+                chat_id=callback.message.chat.id, message_id=kb_mid)
         except Exception:
             pass
 
